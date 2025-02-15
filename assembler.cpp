@@ -4,7 +4,7 @@
 std::unordered_map<std::string, uint8_t> opcodeMap = {
     {"MOV",  0x01}, {"ADD",  0x02}, {"SUB",  0x03},
     {"JMP",  0x04}, {"CALL", 0x05}, {"RET",  0x06},
-    {"PUSH", 0x07}, {"POP",  0x08}  // Stack operations
+    {"PUSH", 0x07}, {"POP",  0x08}
 };
 
 // Define register mappings
@@ -47,34 +47,37 @@ uint16_t Assembler::encodeInstruction(const Instruction& instr) {
     uint8_t value = 0;
 
     if (instr.mnemonic == "PUSH" || instr.mnemonic == "POP") {
-        mode = 0b00;  // Stack operations use mode `00`
+        mode = 0b01;
         reg = registerMap[instr.operands[0]];
+    }
+    else if (instr.mnemonic == "CALL") {
+        mode = 0b10;
+        value = labels[instr.operands[0]]; // Get function address
+    }
+    else if (instr.mnemonic == "RET") {
+        mode = 0b10;  // RET uses mode `10`
     }
     else if (instr.operands.size() == 2) {
         std::string dest = instr.operands[0];
         std::string src = instr.operands[1];
 
-        // Register to Register
         if (registerMap.find(dest) != registerMap.end() && registerMap.find(src) != registerMap.end()) {
             mode = 0b00;
             reg = registerMap[dest];
             value = registerMap[src];
         }
-        // Register to Immediate
         else if (registerMap.find(dest) != registerMap.end() && src[0] != '[') {
-            mode = 0b01;
+            mode = 0b00;
             reg = registerMap[dest];
             value = std::stoi(src);
         }
-        // Register to Memory (MOV R1, [100])
         else if (registerMap.find(dest) != registerMap.end() && src[0] == '[') {
-            mode = 0b10;
+            mode = 0b00;
             reg = registerMap[dest];
-            value = std::stoi(src.substr(1, src.size() - 2)); // Extract address inside []
+            value = std::stoi(src.substr(1, src.size() - 2));
         }
-        // Memory to Register (MOV [100], R1)
         else if (dest[0] == '[' && registerMap.find(src) != registerMap.end()) {
-            mode = 0b11;
+            mode = 0b00;
             reg = registerMap[src];
             value = std::stoi(dest.substr(1, dest.size() - 2));
         }
@@ -95,7 +98,6 @@ void Assembler::resolveLabels(std::vector<Instruction>& instructions) {
         }
     }
 
-    // Second pass: replace label references with addresses
     for (Instruction& instr : instructions) {
         if (labels.find(instr.operands[0]) != labels.end()) {
             instr.operands[0] = std::to_string(labels[instr.operands[0]]);
