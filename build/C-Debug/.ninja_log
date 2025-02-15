@@ -1,4 +1,8 @@
 # ninja log v5
-2	779	7612898691087180	CMakeFiles/assember.dir/main.cpp.obj	8098a2db66acea0
-11	1734	7612898700588608	CMakeFiles/assember.dir/assembler.cpp.obj	cda9887af18e3e57
 1734	2029	7612898703488790	assember.exe	948c9ed6cc5bdfc
+11	1734	7612898700588608	CMakeFiles/assember.dir/assembler.cpp.obj	cda9887af18e3e57
+2	779	7612898691087180	CMakeFiles/assember.dir/main.cpp.obj	8098a2db66acea0
+2	652	7612907447404014	build.ninja	3adb8ee4a721d13b
+32	4005	7612907488297746	CMakeFiles/assembler.dir/main.cpp.obj	24178a869f1e863c
+36	4798	7612907496224515	CMakeFiles/assembler.dir/assembler.cpp.obj	f251041a54958cee
+4798	5440	7612907502598982	assembler.exe	1811dd873b0c8be1

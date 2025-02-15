@@ -1,10 +1,15 @@
 #include "assembler.hh"
-#include <string>
 
 // Define opcodes for a simple Luminar instruction set
-std::unordered_map<std::string, uint16_t> opcodeMap = {
+std::unordered_map<std::string, uint8_t> opcodeMap = {
     {"MOV",  0x01}, {"ADD",  0x02}, {"SUB",  0x03},
     {"JMP",  0x04}, {"CALL", 0x05}, {"RET",  0x06}
+};
+
+// Define register mappings
+std::unordered_map<std::string, uint8_t> registerMap = {
+    {"R0", 0x00}, {"R1", 0x01}, {"R2", 0x02}, {"R3", 0x03},
+    {"R4", 0x04}, {"R5", 0x05}, {"R6", 0x06}, {"R7", 0x07}
 };
 
 Assembler::Assembler() {}
@@ -35,14 +40,22 @@ std::vector<Instruction> Assembler::parse(const std::string& code) {
 }
 
 uint16_t Assembler::encodeInstruction(const Instruction& instr) {
-    uint16_t opcode = opcodeMap[instr.mnemonic];
-    uint16_t operand = 0;
+    uint8_t opcode = opcodeMap[instr.mnemonic];
+    uint8_t reg = 0;
+    uint8_t imm = 0;
 
-    if (!instr.operands.empty()) {
-        operand = std::stoi(instr.operands[0]); // Basic handling of single immediate values
+    if (instr.operands.size() == 1) { // Single operand (immediate or register)
+        if (registerMap.find(instr.operands[0]) != registerMap.end()) {
+            reg = registerMap[instr.operands[0]];
+        } else {
+            imm = std::stoi(instr.operands[0]); // Immediate value
+        }
+    } else if (instr.operands.size() == 2) { // Register + Immediate
+        reg = registerMap[instr.operands[0]];
+        imm = std::stoi(instr.operands[1]);
     }
 
-    return (opcode << 8) | (operand & 0xFF);
+    return (opcode << 8) | (reg << 4) | (imm & 0x0F);
 }
 
 void Assembler::resolveLabels(std::vector<Instruction>& instructions) {
@@ -80,8 +93,9 @@ bool Assembler::assemble(const std::string& inputFile, const std::string& output
     resolveLabels(instructions);
 
     for (const auto& instr : instructions) {
-        machineCode.push_back(encodeInstruction(instr) >> 8);
-        machineCode.push_back(encodeInstruction(instr) & 0xFF);
+        uint16_t encoded = encodeInstruction(instr);
+        machineCode.push_back(encoded >> 8);
+        machineCode.push_back(encoded & 0xFF);
     }
 
     std::ofstream outFile(outputFile, std::ios::binary);
