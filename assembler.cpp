@@ -7,7 +7,8 @@ std::unordered_map<std::string, uint8_t> opcodeMap = {
     {"JG",   0x0C}, {"JL",   0x0D}, {"JMP",  0x04},
     {"CALL", 0x05}, {"RET",  0x06}, {"PUSH", 0x07},
     {"POP",  0x08}, {"AND",  0x0E}, {"OR",   0x0F},
-    {"XOR",  0x10}, {"NOT",  0x11}
+    {"XOR",  0x10}, {"NOT",  0x11}, {"SHL",  0x12},
+    {"SHR",  0x13}, {"ROL",  0x14}, {"ROR",  0x15}
 };
 
 // Define register mappings
@@ -60,6 +61,12 @@ uint16_t Assembler::encodeInstruction(const Instruction& instr) {
         mode = 0b00;
         reg = registerMap[instr.operands[0]];
         value = 0;  // Unary operation, no second operand
+    }
+    else if (instr.mnemonic == "SHL" || instr.mnemonic == "SHR" ||
+             instr.mnemonic == "ROL" || instr.mnemonic == "ROR") {
+        mode = 0b01;
+        reg = registerMap[instr.operands[0]];
+        value = std::stoi(instr.operands[1]);
     }
     else if (instr.mnemonic == "JE" || instr.mnemonic == "JNE" ||
              instr.mnemonic == "JG" || instr.mnemonic == "JL") {
