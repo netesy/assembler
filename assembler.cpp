@@ -41,21 +41,41 @@ std::vector<Instruction> Assembler::parse(const std::string& code) {
 
 uint16_t Assembler::encodeInstruction(const Instruction& instr) {
     uint8_t opcode = opcodeMap[instr.mnemonic];
+    uint8_t mode = 0;
     uint8_t reg = 0;
-    uint8_t imm = 0;
+    uint8_t value = 0;
 
-    if (instr.operands.size() == 1) { // Single operand (immediate or register)
-        if (registerMap.find(instr.operands[0]) != registerMap.end()) {
-            reg = registerMap[instr.operands[0]];
-        } else {
-            imm = std::stoi(instr.operands[0]); // Immediate value
+    if (instr.operands.size() == 2) {
+        std::string dest = instr.operands[0];
+        std::string src = instr.operands[1];
+
+        // Register to Register
+        if (registerMap.find(dest) != registerMap.end() && registerMap.find(src) != registerMap.end()) {
+            mode = 0b00;
+            reg = registerMap[dest];
+            value = registerMap[src];
         }
-    } else if (instr.operands.size() == 2) { // Register + Immediate
-        reg = registerMap[instr.operands[0]];
-        imm = std::stoi(instr.operands[1]);
+        // Register to Immediate
+        else if (registerMap.find(dest) != registerMap.end() && src[0] != '[') {
+            mode = 0b01;
+            reg = registerMap[dest];
+            value = std::stoi(src);
+        }
+        // Register to Memory (MOV R1, [100])
+        else if (registerMap.find(dest) != registerMap.end() && src[0] == '[') {
+            mode = 0b10;
+            reg = registerMap[dest];
+            value = std::stoi(src.substr(1, src.size() - 2)); // Extract address inside []
+        }
+        // Memory to Register (MOV [100], R1)
+        else if (dest[0] == '[' && registerMap.find(src) != registerMap.end()) {
+            mode = 0b11;
+            reg = registerMap[src];
+            value = std::stoi(dest.substr(1, dest.size() - 2));
+        }
     }
 
-    return (opcode << 8) | (reg << 4) | (imm & 0x0F);
+    return (opcode << 8) | (mode << 6) | (reg << 3) | (value & 0x07);
 }
 
 void Assembler::resolveLabels(std::vector<Instruction>& instructions) {
