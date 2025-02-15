@@ -3,14 +3,17 @@
 // Define opcodes for Luminar instruction set
 std::unordered_map<std::string, uint8_t> opcodeMap = {
     {"MOV",  0x01}, {"ADD",  0x02}, {"SUB",  0x03},
-    {"JMP",  0x04}, {"CALL", 0x05}, {"RET",  0x06},
-    {"PUSH", 0x07}, {"POP",  0x08}
+    {"CMP",  0x09}, {"JE",   0x0A}, {"JNE",  0x0B},
+    {"JG",   0x0C}, {"JL",   0x0D}, {"JMP",  0x04},
+    {"CALL", 0x05}, {"RET",  0x06}, {"PUSH", 0x07},
+    {"POP",  0x08}
 };
 
 // Define register mappings
 std::unordered_map<std::string, uint8_t> registerMap = {
     {"R0", 0x00}, {"R1", 0x01}, {"R2", 0x02}, {"R3", 0x03},
     {"R4", 0x04}, {"R5", 0x05}, {"R6", 0x06}, {"R7", 0x07}
+
 };
 
 Assembler::Assembler() {}
@@ -46,16 +49,22 @@ uint16_t Assembler::encodeInstruction(const Instruction& instr) {
     uint8_t reg = 0;
     uint8_t value = 0;
 
-    if (instr.mnemonic == "PUSH" || instr.mnemonic == "POP") {
-        mode = 0b01;
+    if (instr.mnemonic == "CMP") {
+        mode = 0b00;
         reg = registerMap[instr.operands[0]];
+        value = registerMap[instr.operands[1]];
+    }
+    else if (instr.mnemonic == "JE" || instr.mnemonic == "JNE" ||
+             instr.mnemonic == "JG" || instr.mnemonic == "JL") {
+        mode = 0b11;
+        value = labels[instr.operands[0]];  // Jump address
     }
     else if (instr.mnemonic == "CALL") {
         mode = 0b10;
-        value = labels[instr.operands[0]]; // Get function address
+        value = labels[instr.operands[0]];
     }
     else if (instr.mnemonic == "RET") {
-        mode = 0b10;  // RET uses mode `10`
+        mode = 0b10;
     }
     else if (instr.operands.size() == 2) {
         std::string dest = instr.operands[0];
