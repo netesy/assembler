@@ -1,0 +1,5 @@
+START:
+    MOV 10
+    ADD 20
+    SUB 5
+    JMP START
