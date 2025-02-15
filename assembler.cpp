@@ -1,9 +1,10 @@
 #include "assembler.hh"
 
-// Define opcodes for a simple Luminar instruction set
+// Define opcodes for Luminar instruction set
 std::unordered_map<std::string, uint8_t> opcodeMap = {
     {"MOV",  0x01}, {"ADD",  0x02}, {"SUB",  0x03},
-    {"JMP",  0x04}, {"CALL", 0x05}, {"RET",  0x06}
+    {"JMP",  0x04}, {"CALL", 0x05}, {"RET",  0x06},
+    {"PUSH", 0x07}, {"POP",  0x08}  // Stack operations
 };
 
 // Define register mappings
@@ -45,7 +46,11 @@ uint16_t Assembler::encodeInstruction(const Instruction& instr) {
     uint8_t reg = 0;
     uint8_t value = 0;
 
-    if (instr.operands.size() == 2) {
+    if (instr.mnemonic == "PUSH" || instr.mnemonic == "POP") {
+        mode = 0b00;  // Stack operations use mode `00`
+        reg = registerMap[instr.operands[0]];
+    }
+    else if (instr.operands.size() == 2) {
         std::string dest = instr.operands[0];
         std::string src = instr.operands[1];
 
