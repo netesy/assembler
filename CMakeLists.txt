@@ -6,7 +6,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(assembler main.cpp
-    assembler.hh assembler.cpp)
+    assembler.hh assembler.cpp
+    elf.hh elf.cpp)
 
 include(GNUInstallDirs)
 install(TARGETS assembler
