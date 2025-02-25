@@ -237,42 +237,104 @@ private:
 
     // Helper methods for section and segment management
     void setupDefaultSections(const std::vector<uint8_t>& code) {
-        // Initialize string tables first
-        stringTable_ = "\0";  // Initial null byte
-        shstringTable_ = "\0";  // Initial null byte
+        // Create null section (mandatory at index 0)
+        Section nullSection;
+        nullSection.name = "";
+        nullSection.data = {};
+        nullSection.vaddr = 0;
+        nullSection.type = 0;
+        nullSection.flags = 0;
+        nullSection.align = 0;
+        nullSection.name_offset = 0;  // First byte in shstrtab
+        nullSection.offset = 0;
+        nullSection.index = 0;
+        sections_.push_back(std::move(nullSection));
 
-        // Create null section
-        addSection("", {}, 0, 0, 0);
+        // Add section names before creating sections
+        uint32_t textNameOffset = addSectionString(".text");
+        uint32_t dataNameOffset = addSectionString(".data");
+        uint32_t bssNameOffset = addSectionString(".bss");
+        uint32_t strtabNameOffset = addSectionString(".strtab");
+        uint32_t shstrtabNameOffset = addSectionString(".shstrtab");
 
         // Create .text section with code
-        addSection(".text", code, baseAddress_, SHT_PROGBITS,
-                   SHF_ALLOC | SHF_EXECINSTR);
+        Section textSection;
+        textSection.name = ".text";
+        textSection.data = code;
+        textSection.vaddr = baseAddress_;
+        textSection.type = SHT_PROGBITS;
+        textSection.flags = SHF_ALLOC | SHF_EXECINSTR;
+        textSection.align = 16;  // Common alignment for code
+        textSection.name_offset = textNameOffset;
+        textSection.index = sections_.size();
+        sections_.push_back(std::move(textSection));
 
         // Create .data section
-        uint64_t dataAddr = align(baseAddress_ + code.size(), pageSize_);
-        addSection(".data", {}, dataAddr, SHT_PROGBITS,
-                   SHF_ALLOC | SHF_WRITE);
+        Section dataSection;
+        dataSection.name = ".data";
+        dataSection.data = {};
+        dataSection.vaddr = align(baseAddress_ + code.size(), 16);
+        dataSection.type = SHT_PROGBITS;
+        dataSection.flags = SHF_ALLOC | SHF_WRITE;
+        dataSection.align = 8;
+        dataSection.name_offset = dataNameOffset;
+        dataSection.index = sections_.size();
+        sections_.push_back(std::move(dataSection));
 
         // Create .bss section
-        uint64_t bssAddr = dataAddr; // Right after .data
-        addSection(".bss", {}, bssAddr, SHT_NOBITS,
-                   SHF_ALLOC | SHF_WRITE);
+        Section bssSection;
+        bssSection.name = ".bss";
+        bssSection.data = {};
+        bssSection.vaddr = align(dataSection.vaddr, 8);
+        bssSection.type = SHT_NOBITS;
+        bssSection.flags = SHF_ALLOC | SHF_WRITE;
+        bssSection.align = 8;
+        bssSection.name_offset = bssNameOffset;
+        bssSection.index = sections_.size();
+        sections_.push_back(std::move(bssSection));
 
-        // Create string table sections
-        addSection(".strtab", std::vector<uint8_t>(stringTable_.begin(), stringTable_.end()),
-                   0, SHT_STRTAB, 0);
-        addSection(".shstrtab", std::vector<uint8_t>(shstringTable_.begin(), shstringTable_.end()),
-                   0, SHT_STRTAB, 0);
+        // Create string tables now that they have content
+        // Create .strtab section
+        Section strtabSection;
+        strtabSection.name = ".strtab";
+        strtabSection.vaddr = 0;  // Will be set in layoutSections
+        strtabSection.type = SHT_STRTAB;
+        strtabSection.flags = 0;
+        strtabSection.align = 1;
+        strtabSection.name_offset = strtabNameOffset;
+        strtabSection.index = sections_.size();
+        sections_.push_back(std::move(strtabSection));
+
+        // Create .shstrtab section
+        Section shstrtabSection;
+        shstrtabSection.name = ".shstrtab";
+        shstrtabSection.vaddr = 0;  // Will be set in layoutSections
+        shstrtabSection.type = SHT_STRTAB;
+        shstrtabSection.flags = 0;
+        shstrtabSection.align = 1;
+        shstrtabSection.name_offset = shstrtabNameOffset;
+        shstrtabSection.index = sections_.size();
+        sections_.push_back(std::move(shstrtabSection));
     }
 
     void layoutSections() {
-        uint64_t offset = sizeof(ElfHeader) +
-                          segments_.size() * sizeof(ProgramHeader);
+        uint64_t headerSize = sizeof(ElfHeader) + (2 * sizeof(ProgramHeader));  // Assume at least 2 segments
+        uint64_t offset = align(headerSize, pageSize_);  // Align to page size
 
         for (auto& section : sections_) {
-            if (section.type != SHT_NOBITS && !section.data.empty()) {
-                section.vaddr = align(offset, section.align);
-                offset = section.vaddr + section.data.size();
+            if (section.type == SHT_NOBITS) {
+                // BSS sections don't have file content
+                section.offset = 0;
+                continue;
+            }
+
+            // Align offset according to section alignment
+            offset = align(offset, section.align);
+            section.offset = offset;
+
+            // Advance offset by section size
+            if (!section.data.empty()) {
+                offset += section.data.size();
             }
         }
     }
@@ -346,17 +408,41 @@ private:
         // String tables should come after all loadable segments
         currentOffset = align(currentOffset, 4);  // Align to 4 bytes
 
+        // // Update string table sections
+        // auto shstrIdx = findSectionIndex(".shstrtab");
+        // if (shstrIdx > 0) {
+        //     sections_[shstrIdx].offset = currentOffset;
+        //     currentOffset += shstringTable_.size();
+        // }
+
+        // auto strIdx = findSectionIndex(".strtab");
+        // if (strIdx > 0) {
+        //     sections_[strIdx].offset = currentOffset;
+        //     currentOffset += stringTable_.size();
+        // }
+
+        // Make sure the string tables have proper offsets
+        uint64_t stringTablesOffset = currentOffset;
+
         // Update string table sections
         auto shstrIdx = findSectionIndex(".shstrtab");
         if (shstrIdx > 0) {
-            sections_[shstrIdx].offset = currentOffset;
-            currentOffset += shstringTable_.size();
+            sections_[shstrIdx].offset = stringTablesOffset;
+            // Update the section data from the current string table content
+            sections_[shstrIdx].data.assign(shstringTable_.begin(), shstringTable_.end());
+            stringTablesOffset += shstringTable_.size();
         }
 
         auto strIdx = findSectionIndex(".strtab");
         if (strIdx > 0) {
-            sections_[strIdx].offset = currentOffset;
-            currentOffset += stringTable_.size();
+            sections_[strIdx].offset = stringTablesOffset;
+            // Update the section data from the current string table content
+            sections_[strIdx].data.assign(stringTable_.begin(), stringTable_.end());
+        }
+
+        // Update the ELF header shstrndx field
+        if (shstrIdx > 0) {
+            // This will be set in writeElfHeader
         }
     }
 
@@ -476,13 +562,15 @@ private:
     void writeSectionHeaders(std::ofstream& file) {
         for (const auto& section : sections_) {
             SectionHeader sh = {};
-            sh.sh_name = addSectionName(section.name);
+            // Use the pre-calculated name offset
+            sh.sh_name = section.name_offset;
             sh.sh_type = section.type;
             sh.sh_flags = section.flags;
             sh.sh_addr = section.vaddr;
-            sh.sh_offset = (section.type != SHT_NOBITS) ?
-                               (section.vaddr - baseAddress_) : 0;
-            sh.sh_size = section.data.size();
+            // Use the correct file offset
+            sh.sh_offset = (section.type != SHT_NOBITS) ? section.offset : 0;
+            sh.sh_size = (section.type != SHT_NOBITS) ? section.data.size() :
+                             (section.name == ".bss" ? 8 : 0);  // Give bss a default size
             sh.sh_link = getShLink(section);
             sh.sh_info = getShInfo(section);
             sh.sh_addralign = section.align;
@@ -509,26 +597,42 @@ private:
     }
 
     void writeStringTables(std::ofstream& file) {
-        // Write .strtab
-        if (!stringTable_.empty()) {
-            auto& strtab_section = sections_[findSectionIndex(".strtab")];
-            strtab_section.data.assign(stringTable_.begin(), stringTable_.end());
-            file.seekp(strtab_section.vaddr - baseAddress_);
-            file.write(reinterpret_cast<const char*>(strtab_section.data.data()),
-                       strtab_section.data.size());
+        // Update string table sections with current content
+        auto shstrIdx = findSectionIndex(".shstrtab");
+        if (shstrIdx > 0) {
+            auto& section = sections_[shstrIdx];
+            section.data.clear();
+            section.data.insert(section.data.end(), shstringTable_.begin(), shstringTable_.end());
+
+            // Make sure it's properly positioned in the file
+            file.seekp(section.offset);
+            file.write(reinterpret_cast<const char*>(section.data.data()), section.data.size());
         }
 
-        // Write .shstrtab
-        if (!shstringTable_.empty()) {
-            auto& shstrtab_section = sections_[findSectionIndex(".shstrtab")];
-            shstrtab_section.data.assign(shstringTable_.begin(), shstringTable_.end());
-            file.seekp(shstrtab_section.vaddr - baseAddress_);
-            file.write(reinterpret_cast<const char*>(shstrtab_section.data.data()),
-                       shstrtab_section.data.size());
+        auto strIdx = findSectionIndex(".strtab");
+        if (strIdx > 0) {
+            auto& section = sections_[strIdx];
+            section.data.clear();
+            section.data.insert(section.data.end(), stringTable_.begin(), stringTable_.end());
+
+            // Make sure it's properly positioned in the file
+            file.seekp(section.offset);
+            file.write(reinterpret_cast<const char*>(section.data.data()), section.data.size());
         }
     }
 
     uint32_t addSectionName(const std::string& name) {
+        // Check if name already exists in the string table
+        size_t pos = 0;
+        while (pos < shstringTable_.size()) {
+            std::string existingName = shstringTable_.substr(pos, shstringTable_.find('\0', pos) - pos);
+            if (existingName == name) {
+                return static_cast<uint32_t>(pos);
+            }
+            pos += existingName.size() + 1; // +1 for null terminator
+        }
+
+        // Add new name if not found
         uint32_t offset = shstringTable_.size();
         shstringTable_ += name;
         shstringTable_ += '\0';

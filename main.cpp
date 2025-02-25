@@ -46,9 +46,13 @@ _start:
         return 1;
     }
 
+    elfGen.setEntryPoint(0x400000);
+
     // Get the machine code and symbols from the assembler
     const std::vector<uint8_t>& machineCode = assembler.getMachineCode();
     const std::unordered_map<std::string, uint64_t>& symbols = assembler.getSymbols();
+
+     std::cerr << "Entry Point: " <<  assembler.getEntryPoint() << std::endl;
 
     // Generate the final ELF executable using assembler's sections
     if (!elfGen.generateElf(
