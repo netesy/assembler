@@ -53,11 +53,16 @@ public:
     const std::vector<RelocationEntry> &getRelocations() const;
     uint64_t getEntryPoint() const;
 
+    void printDebugInfo() const;
+
 private:
     Section currentSection;
     uint64_t currentAddress;
     uint64_t dataAddress;
     uint64_t bssAddress;
+    uint64_t textSectionBase;
+    uint64_t dataSectionBase;
+    uint64_t bssSectionBase;
 
     std::unordered_map<std::string, uint64_t> labels;
     std::unordered_map<std::string, std::vector<uint64_t>> unresolvedSymbols;

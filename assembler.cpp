@@ -21,6 +21,7 @@ std::unordered_map<std::string, uint8_t> registerMap = {{"R0", 0x00},
 Assembler::Assembler()
     : currentAddress(0)
     , dataAddress(0)
+    , dataSectionBase(0x00600000) // Explicitly initialize dataSectionBase
 {}
 
 std::vector<Instruction> Assembler::parse(const std::string &code)
@@ -52,17 +53,43 @@ std::vector<Instruction> Assembler::parse(const std::string &code)
 
 uint32_t Assembler::parseOperand(const std::string &operand)
 {
+    std::cout << "Parsing operand: '" << operand << "' ";
+
+    // Check if this is a memory dereference like [message_len]
+    if (operand.size() >= 2 && operand[0] == '[' && operand[operand.size()-1] == ']') {
+        std::string innerOperand = operand.substr(1, operand.size() - 2);
+        std::cout << "(dereference of '" << innerOperand << "') ";
+
+        if (dataLabels.find(innerOperand) != dataLabels.end()) {
+            std::cout << "-> value: " << dataLabels[innerOperand] << "\n";
+            return dataLabels[innerOperand];
+        }
+    }
+
     if (registerMap.find(operand) != registerMap.end()) {
+        std::cout << "-> register: " << (int)registerMap[operand] << "\n";
         return registerMap[operand];
     } else if (labels.find(operand) != labels.end()) {
+        std::cout << "-> text label: 0x" << std::hex << labels[operand] << std::dec << "\n";
         return labels[operand];
     } else if (dataLabels.find(operand) != dataLabels.end()) {
+        std::cout << "-> data label: 0x" << std::hex << dataLabels[operand] << std::dec << "\n";
         return dataLabels[operand];
     } else if (bssLabels.find(operand) != bssLabels.end()) {
+        std::cout << "-> bss label: 0x" << std::hex << bssLabels[operand] << std::dec << "\n";
         return bssLabels[operand];
     } else {
-        unresolvedSymbols[operand].push_back(currentAddress);
-        return 0;
+        // Handle numeric literals
+        try {
+            int value = std::stoi(operand);
+            std::cout << "-> numeric literal: " << value << "\n";
+            return value;
+        } catch (const std::exception& e) {
+            // Not a number, treat as unresolved symbol
+            std::cout << "-> unresolved symbol (will be fixed up later)\n";
+            unresolvedSymbols[operand].push_back(currentAddress);
+            return 0;
+        }
     }
 }
 
@@ -88,32 +115,71 @@ uint32_t Assembler::encodeInstruction(const Instruction &instr)
 
 void Assembler::resolveLabels(std::vector<Instruction> &instructions)
 {
-    currentAddress = 0;
-    dataAddress = 0;
-    bssAddress = 0;
+    // Define base addresses for each section
+    textSectionBase = 0x00400000;  // Common base address for text section
+    dataSectionBase = 0x00600000;  // Common base address for data section
+    bssSectionBase = 0x00800000;   // Common base address for bss section
 
+    // Reset counters for each section
+    currentAddress = textSectionBase;
+    dataAddress = dataSectionBase;
+    bssAddress = bssSectionBase;
+
+    // First pass: identify all labels
     for (size_t i = 0; i < instructions.size(); i++) {
         if (instructions[i].mnemonic.back() == ':') { // Label detected
             std::string labelName = instructions[i].mnemonic.substr(0,
-                                                                    instructions[i].mnemonic.size()
-                                                                        - 1);
-            labels[labelName] = currentAddress;
-            patchUnresolvedSymbols(labelName, currentAddress);
+                                                                    instructions[i].mnemonic.size() - 1);
+            // Assign address based on current section
+            switch (instructions[i].section) {
+            case Section::TEXT:
+                labels[labelName] = currentAddress;
+                break;
+            case Section::DATA:
+                dataLabels[labelName] = dataAddress;
+                break;
+            case Section::BSS:
+                bssLabels[labelName] = bssAddress;
+                break;
+            }
             instructions.erase(instructions.begin() + i);
             i--;
         } else if (instructions[i].mnemonic == ".data") {
-            dataLabels[instructions[i].operands[0]] = dataAddress;
-            patchUnresolvedSymbols(instructions[i].operands[0], dataAddress);
-            int dataSize = std::stoi(instructions[i].operands[1]);
-            dataAddress += dataSize;
+            if (instructions[i].operands.size() >= 2) {
+                dataLabels[instructions[i].operands[0]] = dataAddress;
+                int dataSize = std::stoi(instructions[i].operands[1]);
+                dataAddress += dataSize;
+            }
         } else if (instructions[i].mnemonic == ".bss") {
-            bssLabels[instructions[i].operands[0]] = bssAddress;
-            patchUnresolvedSymbols(instructions[i].operands[0], bssAddress);
-            int bssSize = std::stoi(instructions[i].operands[1]);
-            bssAddress += bssSize;
-        } else {
+            if (instructions[i].operands.size() >= 2) {
+                bssLabels[instructions[i].operands[0]] = bssAddress;
+                int bssSize = std::stoi(instructions[i].operands[1]);
+                bssAddress += bssSize;
+            }
+        } else if (instructions[i].section == Section::TEXT) {
+            // Only increment address for actual instructions in TEXT section
             currentAddress += 4;
         }
+    }
+
+    // Patch unresolved symbols now that we have all labels
+    for (const auto& symbol : unresolvedSymbols) {
+        if (labels.find(symbol.first) != labels.end()) {
+            patchUnresolvedSymbols(symbol.first, labels[symbol.first]);
+        } else if (dataLabels.find(symbol.first) != dataLabels.end()) {
+            patchUnresolvedSymbols(symbol.first, dataLabels[symbol.first]);
+        } else if (bssLabels.find(symbol.first) != bssLabels.end()) {
+            patchUnresolvedSymbols(symbol.first, bssLabels[symbol.first]);
+        }
+    }
+
+    // Set entry point if _start is defined
+    auto it = labels.find("_start");
+    if (it != labels.end()) {
+        entryPoint = it->second;
+        std::cout << "DEBUG: _start label found at address 0x" << std::hex << entryPoint << std::dec << "\n";
+    } else {
+        throw std::runtime_error("No _start label found");
     }
 }
 
@@ -147,19 +213,29 @@ bool Assembler::assemble(const std::string &inputFile, const std::string &output
     try {
         std::vector<Instruction> instructions = parse(inputFile);
 
-        // First pass: process sections and labels
+        // First pass: mark all instructions with their section
+        Section currentSection = Section::TEXT;
+        for (auto& instr : instructions) {
+            if (instr.mnemonic == ".text") {
+                currentSection = Section::TEXT;
+                continue;
+            } else if (instr.mnemonic == ".data") {
+                currentSection = Section::DATA;
+                continue;
+            } else if (instr.mnemonic == ".bss") {
+                currentSection = Section::BSS;
+                continue;
+            }
+
+            instr.section = currentSection;
+        }
+
+        // Process sections and resolve labels
         processDataSection(instructions);
         resolveLabels(instructions);
 
-        // Set entry point if _start is defined
-        auto it = labels.find("_start");
-        if (it != labels.end()) {
-            entryPoint = it->second;
-        } else {
-            throw std::runtime_error("No _start label found");
-        }
-
         // Second pass: generate machine code
+        currentAddress = textSectionBase;  // Reset address counter for code generation
         for (const auto& instr : instructions) {
             if (instr.section == Section::TEXT) {
                 uint32_t encoded = encodeInstruction(instr);
@@ -167,6 +243,7 @@ bool Assembler::assemble(const std::string &inputFile, const std::string &output
                 textSection.push_back((encoded >> 16) & 0xFF);
                 textSection.push_back((encoded >> 8) & 0xFF);
                 textSection.push_back(encoded & 0xFF);
+                currentAddress += 4;
             }
         }
 
@@ -212,10 +289,88 @@ const std::vector<uint8_t>& Assembler::getDataSection() const { return dataSecti
 const std::vector<uint8_t>& Assembler::getBssSection() const { return bssSection; }
 uint64_t Assembler::getEntryPoint() const { return entryPoint; }
 
+void Assembler::printDebugInfo() const
+{
+    std::cout << "\n==== ASSEMBLER DEBUG INFORMATION ====\n\n";
+
+    // Print text section labels
+    std::cout << "TEXT SECTION LABELS (.text starts at 0x" << std::hex << textSectionBase
+              << std::dec << "):\n";
+    for (const auto &label : labels) {
+        std::cout << "  " << label.first << ": 0x" << std::hex << label.second << std::dec << "\n";
+    }
+
+    // Print data section labels
+    std::cout << "\nDATA SECTION LABELS (.data starts at 0x" << std::hex << dataSectionBase
+              << std::dec << "):\n";
+    for (const auto &label : dataLabels) {
+        std::cout << "  " << label.first << ": 0x" << std::hex << label.second << std::dec;
+
+        // If this is a string length label, show the value
+        if (label.first.find("_len") != std::string::npos) {
+            std::cout << " (value: " << label.second << ")";
+        }
+        std::cout << "\n";
+    }
+
+    // Print BSS section labels
+    std::cout << "\nBSS SECTION LABELS (.bss starts at 0x" << std::hex << bssSectionBase << std::dec
+              << "):\n";
+    for (const auto &label : bssLabels) {
+        std::cout << "  " << label.first << ": 0x" << std::hex << label.second << std::dec << "\n";
+    }
+
+    // Print unresolved symbols
+    std::cout << "\nUNRESOLVED SYMBOLS:\n";
+    if (unresolvedSymbols.empty()) {
+        std::cout << "  None\n";
+    } else {
+        for (const auto &sym : unresolvedSymbols) {
+            std::cout << "  " << sym.first << " (referenced at:";
+            for (const auto &addr : sym.second) {
+                std::cout << " 0x" << std::hex << addr << std::dec;
+            }
+            std::cout << ")\n";
+        }
+    }
+
+    // Print entry point
+    std::cout << "\nENTRY POINT: 0x" << std::hex << entryPoint << std::dec << "\n";
+
+    // Print section sizes
+    std::cout << "\nSECTION SIZES:\n";
+    std::cout << "  .text: " << textSection.size() << " bytes\n";
+    std::cout << "  .data: " << dataSection.size() << " bytes\n";
+    std::cout << "  .bss: " << bssSection.size() << " bytes\n";
+
+    std::cout << "\n";
+    std::cout << "\n==== END DEBUG INFORMATION ====\n\n";
+}
+
 void Assembler::processDataSection(std::vector<Instruction> &instructions)
 {
+    std::cout << "DEBUG: processDataSection - dataSectionBase = 0x" << std::hex << dataSectionBase << std::dec << "\n";
+
     Section currentSection = Section::TEXT;
 
+    // First pass - mark each instruction with its section
+    for (auto& instr : instructions) {
+        if (instr.mnemonic == ".text") {
+            currentSection = Section::TEXT;
+            continue;
+        } else if (instr.mnemonic == ".data") {
+            currentSection = Section::DATA;
+            continue;
+        } else if (instr.mnemonic == ".bss") {
+            currentSection = Section::BSS;
+            continue;
+        }
+
+        instr.section = currentSection;
+    }
+
+    // Second pass - process data declarations
+    currentSection = Section::TEXT;
     for (auto it = instructions.begin(); it != instructions.end();) {
         if (it->mnemonic == ".text") {
             currentSection = Section::TEXT;
@@ -231,30 +386,87 @@ void Assembler::processDataSection(std::vector<Instruction> &instructions)
             continue;
         }
 
-        it->section = currentSection;
-
         // Process data declarations
         if (currentSection == Section::DATA && it->mnemonic.back() != ':') {
             std::string label = it->mnemonic;
             if (it->operands.size() >= 1) {
+                // Check if it's a string (first char is quote)
                 if (it->operands[0][0] == '"') {
-                    // String data
-                    std::string str = it->operands[0].substr(1, it->operands[0].size() - 2);
-                    dataLabels[label] = dataSection.size();
+                    // Find the last quote
+                    std::string rawString = it->operands[0];
+                    size_t lastQuotePos = rawString.rfind('"');
 
-                    // Store string in data section
-                    for (char c : str) {
+                    // If we don't have a closing quote, join operands
+                    if (lastQuotePos == 0 && it->operands.size() > 1) {
+                        // Join all operands to handle strings with spaces
+                        std::string fullString = it->operands[0];
+                        for (size_t i = 1; i < it->operands.size(); i++) {
+                            fullString += " " + it->operands[i];
+                        }
+
+                        // Find the last quote in the full string
+                        lastQuotePos = fullString.rfind('"');
+                        if (lastQuotePos != std::string::npos && lastQuotePos > 0) {
+                            rawString = fullString;
+                        }
+                    }
+
+                    // Extract the string content
+                    std::string str;
+                    if (lastQuotePos != std::string::npos && lastQuotePos > 0) {
+                        str = rawString.substr(1, lastQuotePos - 1);
+                    } else {
+                        str = rawString.substr(1, rawString.size() - 2);
+                    }
+
+                    // Handle escape sequences
+                    std::string processedStr;
+                    for (size_t i = 0; i < str.size(); i++) {
+                        if (str[i] == '\\' && i + 1 < str.size()) {
+                            switch (str[i+1]) {
+                            case 'n': processedStr += '\n'; break;
+                            case 't': processedStr += '\t'; break;
+                            case 'r': processedStr += '\r'; break;
+                            case '\\': processedStr += '\\'; break;
+                            case '"': processedStr += '"'; break;
+                            default: processedStr += str[i+1];
+                            }
+                            i++; // Skip the next character
+                        } else {
+                            processedStr += str[i];
+                        }
+                    }
+
+                    std::cout << "Processing string data '" << label << "': \""
+                              << processedStr << "\" (length: " << processedStr.length() << ")\n";
+
+                    // Store in data section
+                    uint64_t address = static_cast<uint64_t>(dataSectionBase) + static_cast<uint64_t>(dataSection.size());
+                    dataLabels[label] = address;
+                    for (char c : processedStr) {
                         dataSection.push_back(static_cast<uint8_t>(c));
                     }
 
-                    // Store length in symbol table
+                    // Add null terminator
+                    dataSection.push_back(0);
+
+                    // Store length in symbol table (excluding null terminator)
                     std::string lenLabel = label + "_len";
-                    dataLabels[lenLabel] = str.length();
+                    dataLabels[lenLabel] = processedStr.length();
+
+                    std::cout << "  Created data at 0x" << std::hex
+                              << address << std::dec
+                              << " with length " << processedStr.length() << "\n";
                 } else {
                     // Numeric data
-                    dataLabels[label] = dataSection.size();
                     int size = std::stoi(it->operands[0]);
+                    uint64_t address = static_cast<uint64_t>(dataSectionBase) + static_cast<uint64_t>(dataSection.size());
+                    dataLabels[label] = address;
                     dataSection.resize(dataSection.size() + size);
+
+                    std::cout << "Processing numeric data '" << label
+                              << "': " << size << " bytes at 0x"
+                              << std::hex << address << std::dec << "\n";
                 }
             }
             it = instructions.erase(it);
