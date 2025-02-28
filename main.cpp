@@ -1,5 +1,6 @@
 #include "assembler.hh"
 #include "elf.hh"
+#include "pe.hh"
 #include <filesystem>
 #include <iostream>
 
@@ -30,7 +31,6 @@ _start:
 
     std::string inputFile = asmCode; // argv[1];
     std::string outputFile = "sample-exec";
-    outputFile =  outputFile + ".elf";
 
     // if (argc == 3) {
     //     outputFile = argv[2];
@@ -40,43 +40,49 @@ _start:
     // }
     Assembler assembler;
     ElfGenerator elfGen(true, 0x400000); // 64-bit, base address at 0x400000;
+    PEGenerator peGen(true);  // false = 32-bit
 
     if (!assembler.assemble(inputFile, outputFile + ".o")) {
         std::cerr << "Assembly failed\n";
         return 1;
     }
 
-    elfGen.setEntryPoint(0x400000);
-
+   // elfGen.setEntryPoint(assembler.getEntryPoint());
+    assembler.printDebugInfo();
     // Get the machine code and symbols from the assembler
     const std::vector<uint8_t>& machineCode = assembler.getMachineCode();
     const std::unordered_map<std::string, uint64_t>& symbols = assembler.getSymbols();
 
-     std::cerr << "Entry Point: " <<  assembler.getEntryPoint() << std::endl;
+     std::cout << "Entry Point: " <<  assembler.getEntryPoint() << std::endl;
+    // Add imports
+    peGen.addImport("KERNEL32.dll", {"ExitProcess"});
 
     // Generate the final ELF executable using assembler's sections
     if (!elfGen.generateElf(
             assembler.getTextSection(),
-            outputFile,
+            outputFile + ".elf",
             assembler.getSymbols(),
             assembler.getDataSection(),
-            assembler.getEntryPoint())) {
+            0x400000)) {
         std::cerr << "ELF generation failed: " << elfGen.getLastError() << std::endl;
         return 1;
     }
 
-    // ElfGenerator generator(true);  // true for 64-bit
-    // if (!generator.generateExecutable(outputFile, machineCode, symbols)) {
-    //     std::cerr << "Error: " << generator.getLastError() << std::endl;
-    //     return 1;
-    // }
+    peGen.setSubsystem(IMAGE_SUBSYSTEM_WINDOWS_CUI);
+
+    // Generate the executable
+    if (peGen.generateExecutable(outputFile + ".exe", machineCode)) {
+        std::cout << "Pe Executable generated successfully" << std::endl;
+    } else {
+        std::cerr << "Error: " << peGen.getLastError() << std::endl;
+    }
 
     // Set executable permissions
-    std::filesystem::permissions(outputFile,
-                                 std::filesystem::perms::owner_exec |
-                                     std::filesystem::perms::owner_read |
-                                     std::filesystem::perms::owner_write,
-                                 std::filesystem::perm_options::add);
+    // std::filesystem::permissions(outputFile,
+    //                              std::filesystem::perms::owner_exec |
+    //                                  std::filesystem::perms::owner_read |
+    //                                  std::filesystem::perms::owner_write,
+    //                              std::filesystem::perm_options::add);
 
     std::cout << "ELF executable generated successfully: " << argv[2] << "\n";
     return 0;
