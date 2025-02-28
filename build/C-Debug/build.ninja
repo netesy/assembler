@@ -67,6 +67,12 @@ build CMakeFiles/assembler.dir/elf.cpp.obj: CXX_COMPILER__assembler_unscanned_De
   OBJECT_DIR = CMakeFiles\assembler.dir
   OBJECT_FILE_DIR = CMakeFiles\assembler.dir
 
+build CMakeFiles/assembler.dir/pe.cpp.obj: CXX_COMPILER__assembler_unscanned_Debug C$:/Users/Fablur/Desktop/Projects/assember/pe.cpp || cmake_object_order_depends_target_assembler
+  DEP_FILE = CMakeFiles\assembler.dir\pe.cpp.obj.d
+  FLAGS = -g -std=gnu++17 -fdiagnostics-color=always
+  OBJECT_DIR = CMakeFiles\assembler.dir
+  OBJECT_FILE_DIR = CMakeFiles\assembler.dir
+
 
 # =============================================================================
 # Link build statements for EXECUTABLE target assembler
@@ -75,7 +81,7 @@ build CMakeFiles/assembler.dir/elf.cpp.obj: CXX_COMPILER__assembler_unscanned_De
 #############################################
 # Link the executable assembler.exe
 
-build assembler.exe: CXX_EXECUTABLE_LINKER__assembler_Debug CMakeFiles/assembler.dir/main.cpp.obj CMakeFiles/assembler.dir/assembler.cpp.obj CMakeFiles/assembler.dir/elf.cpp.obj
+build assembler.exe: CXX_EXECUTABLE_LINKER__assembler_Debug CMakeFiles/assembler.dir/main.cpp.obj CMakeFiles/assembler.dir/assembler.cpp.obj CMakeFiles/assembler.dir/elf.cpp.obj CMakeFiles/assembler.dir/pe.cpp.obj
   FLAGS = -g
   LINK_LIBRARIES = -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\assembler.dir
