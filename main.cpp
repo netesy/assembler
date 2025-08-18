@@ -27,6 +27,10 @@ _start:
     MOV R1, message        # string address
     MOV R2, [message_len]  # length is automatically available
     MOV R3, 1              # sys_write
+
+        MOV R0, 0              # exit code 0
+    MOV R3, 60             # syscall number (sys_exit)
+
 )";
 
     std::string inputFile = asmCode; // argv[1];
@@ -77,7 +81,7 @@ _start:
         std::cerr << "Error: " << peGen.getLastError() << std::endl;
     }
 
-    // Set executable permissions
+   // set executable permissions
     // std::filesystem::permissions(outputFile,
     //                              std::filesystem::perms::owner_exec |
     //                                  std::filesystem::perms::owner_read |

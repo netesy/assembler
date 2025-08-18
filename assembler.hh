@@ -8,6 +8,9 @@
 #include <unordered_map>
 #include <string>
 #include <cstdint>
+#include <bitset>
+#include <climits>
+// #include <libgccjit++.h>s
 
 enum class Section {
     NONE,
@@ -82,12 +85,15 @@ private:
     std::vector<Instruction> parse(const std::string& code);
     uint32_t encodeInstruction(const Instruction& instr);
     uint32_t parseOperand(const std::string& operand);
+    uint32_t parseOperandValue(const std::string& operand);
 
     void resolveLabels(std::vector<Instruction>& instructions);
     void resolveSymbols();
     void patchUnresolvedSymbols(const std::string& symbol, uint64_t address);
     void findEntryPoint(const std::vector<Instruction>& instructions);
     void processDataSection(std::vector<Instruction>& instructions);
+    void validateSymbolReferences();
+    Section getSymbolSection(const std::string& symbol) const;
 
 
 };

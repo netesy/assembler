@@ -43,7 +43,13 @@ std::vector<Instruction> Assembler::parse(const std::string &code)
         std::string operand;
 
         while (lineStream >> operand) {
-            instr.operands.push_back(operand);
+            // Remove trailing comma if present
+            if (!operand.empty() && operand.back() == ',') {
+                operand.pop_back();
+            }
+            if (!operand.empty()) {
+                instr.operands.push_back(operand);
+            }
         }
 
         instructions.push_back(instr);
@@ -55,21 +61,94 @@ uint32_t Assembler::parseOperand(const std::string &operand)
 {
     std::cout << "Parsing operand: '" << operand << "' ";
 
-    // Check if this is a memory dereference like [message_len]
+    // Validate operand is not empty
+    if (operand.empty()) {
+        throw std::runtime_error("Empty operand");
+    }
+
+    // Check if this is a memory dereference like [message_len] or [R1+4]
     if (operand.size() >= 2 && operand[0] == '[' && operand[operand.size()-1] == ']') {
         std::string innerOperand = operand.substr(1, operand.size() - 2);
-        std::cout << "(dereference of '" << innerOperand << "') ";
+        std::cout << "(memory dereference of '" << innerOperand << "') ";
 
-        if (dataLabels.find(innerOperand) != dataLabels.end()) {
-            std::cout << "-> value: " << dataLabels[innerOperand] << "\n";
-            return dataLabels[innerOperand];
+        // Handle complex memory addressing like [R1+offset]
+        size_t plusPos = innerOperand.find('+');
+        size_t minusPos = innerOperand.find('-');
+        
+        if (plusPos != std::string::npos || minusPos != std::string::npos) {
+            // Complex addressing mode [reg+offset] or [reg-offset]
+            size_t opPos = (plusPos != std::string::npos) ? plusPos : minusPos;
+            std::string baseReg = innerOperand.substr(0, opPos);
+            std::string offsetStr = innerOperand.substr(opPos + 1);
+            
+            // Validate base register
+            if (registerMap.find(baseReg) == registerMap.end()) {
+                throw std::runtime_error("Invalid base register in memory reference: " + baseReg);
+            }
+            
+            // Parse offset
+            uint32_t offset = parseOperandValue(offsetStr);
+            if (minusPos != std::string::npos) {
+                offset = static_cast<uint32_t>(-static_cast<int32_t>(offset));
+            }
+            
+            std::cout << "-> complex memory [" << baseReg << (plusPos != std::string::npos ? "+" : "-") << offsetStr << "]\n";
+            // For now, return the offset (TODO: implement proper complex addressing)
+            return offset;
+        } else {
+            // Simple memory dereference [symbol] or [register]
+            if (registerMap.find(innerOperand) != registerMap.end()) {
+                std::cout << "-> memory dereference of register " << innerOperand << "\n";
+                return registerMap[innerOperand];
+            } else {
+                // Symbol dereference - return the value at that address
+                uint32_t address = parseOperandValue(innerOperand);
+                std::cout << "-> memory dereference of symbol at 0x" << std::hex << address << std::dec << "\n";
+                return address;
+            }
         }
     }
 
+    // Check for register operand
     if (registerMap.find(operand) != registerMap.end()) {
-        std::cout << "-> register: " << (int)registerMap[operand] << "\n";
-        return registerMap[operand];
-    } else if (labels.find(operand) != labels.end()) {
+        uint8_t regNum = registerMap[operand];
+        if (regNum > 7) {
+            throw std::runtime_error("Invalid register number: " + operand);
+        }
+        std::cout << "-> register: " << (int)regNum << "\n";
+        return regNum;
+    }
+
+    // Check for immediate values (numeric literals)
+    if (operand[0] == '#') {
+        // Explicit immediate value marker
+        std::string numStr = operand.substr(1);
+        try {
+            int value = std::stoi(numStr);
+            if (value < -32768 || value > 65535) {
+                throw std::runtime_error("Immediate value out of range: " + operand);
+            }
+            std::cout << "-> immediate value: " << value << "\n";
+            return static_cast<uint32_t>(value);
+        } catch (const std::invalid_argument&) {
+            throw std::runtime_error("Invalid immediate value: " + operand);
+        }
+    }
+
+    // Try to parse as numeric literal
+    try {
+        int value = std::stoi(operand);
+        if (value < -32768 || value > 65535) {
+            throw std::runtime_error("Numeric literal out of range: " + operand);
+        }
+        std::cout << "-> numeric literal: " << value << "\n";
+        return static_cast<uint32_t>(value);
+    } catch (const std::invalid_argument&) {
+        // Not a number, continue to symbol lookup
+    }
+
+    // Symbol lookup (labels)
+    if (labels.find(operand) != labels.end()) {
         std::cout << "-> text label: 0x" << std::hex << labels[operand] << std::dec << "\n";
         return labels[operand];
     } else if (dataLabels.find(operand) != dataLabels.end()) {
@@ -79,17 +158,71 @@ uint32_t Assembler::parseOperand(const std::string &operand)
         std::cout << "-> bss label: 0x" << std::hex << bssLabels[operand] << std::dec << "\n";
         return bssLabels[operand];
     } else {
-        // Handle numeric literals
+        // Unresolved symbol - will be patched later
+        std::cout << "-> unresolved symbol (will be patched later)\n";
+        unresolvedSymbols[operand].push_back(currentAddress);
+        return 0;
+    }
+}
+
+uint32_t Assembler::parseOperandValue(const std::string &operand)
+{
+    std::cout << "Parsing operand value: '" << operand << "' ";
+
+    // Validate operand is not empty
+    if (operand.empty()) {
+        throw std::runtime_error("Empty operand value");
+    }
+
+    // Handle hexadecimal literals (0x prefix)
+    if (operand.size() > 2 && operand.substr(0, 2) == "0x") {
         try {
-            int value = std::stoi(operand);
-            std::cout << "-> numeric literal: " << value << "\n";
+            uint32_t value = static_cast<uint32_t>(std::stoul(operand, nullptr, 16));
+            std::cout << "-> hex literal: 0x" << std::hex << value << std::dec << "\n";
             return value;
-        } catch (const std::exception& e) {
-            // Not a number, treat as unresolved symbol
-            std::cout << "-> unresolved symbol (will be fixed up later)\n";
-            unresolvedSymbols[operand].push_back(currentAddress);
-            return 0;
+        } catch (const std::exception&) {
+            throw std::runtime_error("Invalid hexadecimal literal: " + operand);
         }
+    }
+
+    // Handle binary literals (0b prefix)
+    if (operand.size() > 2 && operand.substr(0, 2) == "0b") {
+        try {
+            uint32_t value = static_cast<uint32_t>(std::stoul(operand.substr(2), nullptr, 2));
+            std::cout << "-> binary literal: 0b" << std::bitset<32>(value) << "\n";
+            return value;
+        } catch (const std::exception&) {
+            throw std::runtime_error("Invalid binary literal: " + operand);
+        }
+    }
+
+    // Symbol lookup
+    if (labels.find(operand) != labels.end()) {
+        std::cout << "-> text label: 0x" << std::hex << labels[operand] << std::dec << "\n";
+        return labels[operand];
+    } else if (dataLabels.find(operand) != dataLabels.end()) {
+        std::cout << "-> data label: 0x" << std::hex << dataLabels[operand] << std::dec << "\n";
+        return dataLabels[operand];
+    } else if (bssLabels.find(operand) != bssLabels.end()) {
+        std::cout << "-> bss label: 0x" << std::hex << bssLabels[operand] << std::dec << "\n";
+        return bssLabels[operand];
+    }
+
+    // Handle decimal numeric literals
+    try {
+        long long value = std::stoll(operand);
+        if (value < 0 || value > UINT32_MAX) {
+            throw std::runtime_error("Numeric value out of 32-bit range: " + operand);
+        }
+        std::cout << "-> numeric literal: " << value << "\n";
+        return static_cast<uint32_t>(value);
+    } catch (const std::invalid_argument&) {
+        // Not a number, treat as unresolved symbol
+        std::cout << "-> unresolved symbol (will be patched later)\n";
+        unresolvedSymbols[operand].push_back(currentAddress);
+        return 0;
+    } catch (const std::out_of_range&) {
+        throw std::runtime_error("Numeric value out of range: " + operand);
     }
 }
 
@@ -100,17 +233,78 @@ uint32_t Assembler::encodeInstruction(const Instruction &instr)
     }
 
     uint8_t opcode = opcodeMap[instr.mnemonic];
-    uint8_t mode = 0, reg = 0;
-    int32_t value = 0;
+    uint8_t mode = 0;
+    uint8_t reg1 = 0;
+    uint8_t reg2_or_imm = 0;
+    uint32_t immediate = 0;
+    bool hasImmediate = false;
 
     if (instr.operands.size() == 2) {
-        reg = parseOperand(instr.operands[0]);
-        value = parseOperand(instr.operands[1]);
+        // Two operand instruction: dest, src
+        std::string destOp = instr.operands[0];
+        std::string srcOp = instr.operands[1];
+        
+        // Parse destination operand (should be register)
+        if (registerMap.find(destOp) != registerMap.end()) {
+            reg1 = registerMap[destOp];
+        } else {
+            throw std::runtime_error("Invalid destination operand: " + destOp);
+        }
+        
+        // Parse source operand and determine addressing mode
+        if (registerMap.find(srcOp) != registerMap.end()) {
+            // reg-reg mode
+            mode = 0;
+            reg2_or_imm = registerMap[srcOp];
+        } else if (srcOp.size() >= 2 && srcOp[0] == '[' && srcOp[srcOp.size()-1] == ']') {
+            // reg-mem mode (memory dereference)
+            mode = 2;
+            std::string innerOperand = srcOp.substr(1, srcOp.size() - 2);
+            immediate = parseOperandValue(innerOperand);
+            hasImmediate = true;
+        } else {
+            // reg-imm mode (immediate value or symbol)
+            mode = 1;
+            immediate = parseOperandValue(srcOp);
+            hasImmediate = true;
+        }
     } else if (instr.operands.size() == 1) {
-        value = parseOperand(instr.operands[0]);
+        // Single operand instruction
+        std::string op = instr.operands[0];
+        
+        if (registerMap.find(op) != registerMap.end()) {
+            // Register operand
+            mode = 0;
+            reg1 = registerMap[op];
+        } else if (op.size() >= 2 && op[0] == '[' && op[op.size()-1] == ']') {
+            // Memory operand
+            mode = 2;
+            std::string innerOperand = op.substr(1, op.size() - 2);
+            immediate = parseOperandValue(innerOperand);
+            hasImmediate = true;
+        } else {
+            // Immediate operand
+            mode = 1;
+            immediate = parseOperandValue(op);
+            hasImmediate = true;
+        }
     }
 
-    return (opcode << 24) | (mode << 16) | (reg << 8) | (value & 0xFFFF);
+    // Encode instruction: [opcode:8][mode:8][reg1:8][reg2/imm:8] for first 32 bits
+    // Store immediate separately for now to maintain compatibility
+    uint32_t encoded = 0;
+    encoded |= (static_cast<uint32_t>(opcode) << 24);
+    encoded |= (static_cast<uint32_t>(mode) << 16);
+    encoded |= (static_cast<uint32_t>(reg1) << 8);
+    encoded |= static_cast<uint32_t>(reg2_or_imm);
+
+    // TODO: Handle full 64-bit instruction format with immediate values
+    // For now, we'll store immediate in the lower bits if it fits
+    if (hasImmediate && immediate <= 0xFF) {
+        encoded = (encoded & 0xFFFFFF00) | (immediate & 0xFF);
+    }
+
+    return encoded;
 }
 
 void Assembler::resolveLabels(std::vector<Instruction> &instructions)
@@ -162,15 +356,39 @@ void Assembler::resolveLabels(std::vector<Instruction> &instructions)
         }
     }
 
+    // Validate all symbol references before patching
+    validateSymbolReferences();
+    
     // Patch unresolved symbols now that we have all labels
+    std::vector<std::string> undefinedSymbols;
+    
     for (const auto& symbol : unresolvedSymbols) {
+        bool symbolFound = false;
+        
         if (labels.find(symbol.first) != labels.end()) {
             patchUnresolvedSymbols(symbol.first, labels[symbol.first]);
+            symbolFound = true;
         } else if (dataLabels.find(symbol.first) != dataLabels.end()) {
             patchUnresolvedSymbols(symbol.first, dataLabels[symbol.first]);
+            symbolFound = true;
         } else if (bssLabels.find(symbol.first) != bssLabels.end()) {
             patchUnresolvedSymbols(symbol.first, bssLabels[symbol.first]);
+            symbolFound = true;
         }
+        
+        if (!symbolFound) {
+            undefinedSymbols.push_back(symbol.first);
+        }
+    }
+    
+    // Report undefined symbols
+    if (!undefinedSymbols.empty()) {
+        std::string errorMsg = "Undefined symbols: ";
+        for (size_t i = 0; i < undefinedSymbols.size(); ++i) {
+            if (i > 0) errorMsg += ", ";
+            errorMsg += undefinedSymbols[i];
+        }
+        throw std::runtime_error(errorMsg);
     }
 
     // Set entry point if _start is defined
@@ -255,13 +473,93 @@ bool Assembler::assemble(const std::string &inputFile, const std::string &output
 }
 
 void Assembler::patchUnresolvedSymbols(const std::string& symbol, uint64_t address) {
-    if (unresolvedSymbols.find(symbol) != unresolvedSymbols.end()) {
-        for (uint64_t offset : unresolvedSymbols[symbol]) {
-            int32_t value = address;
-            textSection[offset / 4] |= (value & 0xFFFF);
-        }
-        unresolvedSymbols.erase(symbol);
+    if (unresolvedSymbols.find(symbol) == unresolvedSymbols.end()) {
+        return; // No references to patch
     }
+
+    std::cout << "Patching symbol '" << symbol << "' with address 0x" << std::hex << address << std::dec << "\n";
+
+    for (uint64_t instructionAddress : unresolvedSymbols[symbol]) {
+        // Calculate the byte offset in the text section
+        uint64_t byteOffset = instructionAddress - textSectionBase;
+        
+        if (byteOffset >= textSection.size()) {
+            std::cerr << "Warning: Patch offset " << byteOffset << " is beyond text section size " << textSection.size() << "\n";
+            continue;
+        }
+
+        // Calculate instruction index (each instruction is 4 bytes)
+        size_t instrIndex = byteOffset / 4;
+        if (instrIndex * 4 + 3 >= textSection.size()) {
+            std::cerr << "Warning: Instruction at offset " << byteOffset << " extends beyond text section\n";
+            continue;
+        }
+
+        // Read the current instruction (little-endian)
+        uint32_t currentInstr = 0;
+        currentInstr |= textSection[instrIndex * 4];
+        currentInstr |= (textSection[instrIndex * 4 + 1] << 8);
+        currentInstr |= (textSection[instrIndex * 4 + 2] << 16);
+        currentInstr |= (textSection[instrIndex * 4 + 3] << 24);
+
+        // Extract instruction components
+        uint8_t opcode = (currentInstr >> 24) & 0xFF;
+        uint8_t mode = (currentInstr >> 16) & 0xFF;
+        uint8_t reg1 = (currentInstr >> 8) & 0xFF;
+        uint8_t reg2_or_imm = currentInstr & 0xFF;
+
+        std::cout << "  Patching instruction at 0x" << std::hex << instructionAddress 
+                  << " (opcode=0x" << (int)opcode << ", mode=" << (int)mode << ")\n";
+
+        // Calculate relative address for different addressing modes
+        uint32_t patchValue = 0;
+        if (mode == 1 || mode == 2) { // Immediate or memory mode
+            // For cross-section references, use absolute address
+            if ((instructionAddress >= textSectionBase && instructionAddress < textSectionBase + 0x100000) &&
+                (address >= dataSectionBase && address < dataSectionBase + 0x100000)) {
+                // Text to data section reference - use absolute address
+                patchValue = static_cast<uint32_t>(address);
+            } else if ((instructionAddress >= textSectionBase && instructionAddress < textSectionBase + 0x100000) &&
+                       (address >= bssSectionBase && address < bssSectionBase + 0x100000)) {
+                // Text to BSS section reference - use absolute address
+                patchValue = static_cast<uint32_t>(address);
+            } else {
+                // Same section or relative reference
+                int64_t relativeAddr = static_cast<int64_t>(address) - static_cast<int64_t>(instructionAddress + 4);
+                if (relativeAddr >= INT32_MIN && relativeAddr <= INT32_MAX) {
+                    patchValue = static_cast<uint32_t>(relativeAddr);
+                } else {
+                    patchValue = static_cast<uint32_t>(address);
+                }
+            }
+
+            // For immediate mode, store in the lower 8 bits if it fits
+            if (mode == 1 && patchValue <= 0xFF) {
+                reg2_or_imm = static_cast<uint8_t>(patchValue);
+            } else {
+                // For larger values, we need to extend the instruction format
+                // For now, store what we can in the available space
+                reg2_or_imm = static_cast<uint8_t>(patchValue & 0xFF);
+            }
+        }
+
+        // Reconstruct the instruction
+        uint32_t patchedInstr = 0;
+        patchedInstr |= (static_cast<uint32_t>(opcode) << 24);
+        patchedInstr |= (static_cast<uint32_t>(mode) << 16);
+        patchedInstr |= (static_cast<uint32_t>(reg1) << 8);
+        patchedInstr |= static_cast<uint32_t>(reg2_or_imm);
+
+        // Write back the patched instruction (little-endian)
+        textSection[instrIndex * 4] = patchedInstr & 0xFF;
+        textSection[instrIndex * 4 + 1] = (patchedInstr >> 8) & 0xFF;
+        textSection[instrIndex * 4 + 2] = (patchedInstr >> 16) & 0xFF;
+        textSection[instrIndex * 4 + 3] = (patchedInstr >> 24) & 0xFF;
+
+        std::cout << "  Patched with value 0x" << std::hex << patchValue << std::dec << "\n";
+    }
+
+    unresolvedSymbols.erase(symbol);
 }
 
 void Assembler::findEntryPoint(const std::vector<Instruction> &instructions)
@@ -474,4 +772,43 @@ void Assembler::processDataSection(std::vector<Instruction> &instructions)
             ++it;
         }
     }
+}
+
+void Assembler::validateSymbolReferences()
+{
+    std::vector<std::string> invalidReferences;
+    
+    for (const auto& symbolRef : unresolvedSymbols) {
+        const std::string& symbolName = symbolRef.first;
+        
+        // Check if symbol exists in any section
+        bool found = (labels.find(symbolName) != labels.end()) ||
+                     (dataLabels.find(symbolName) != dataLabels.end()) ||
+                     (bssLabels.find(symbolName) != bssLabels.end());
+        
+        if (!found) {
+            invalidReferences.push_back(symbolName);
+        }
+    }
+    
+    if (!invalidReferences.empty()) {
+        std::string errorMsg = "Invalid symbol references: ";
+        for (size_t i = 0; i < invalidReferences.size(); ++i) {
+            if (i > 0) errorMsg += ", ";
+            errorMsg += invalidReferences[i];
+        }
+        throw std::runtime_error(errorMsg);
+    }
+}
+
+Section Assembler::getSymbolSection(const std::string& symbol) const
+{
+    if (labels.find(symbol) != labels.end()) {
+        return Section::TEXT;
+    } else if (dataLabels.find(symbol) != dataLabels.end()) {
+        return Section::DATA;
+    } else if (bssLabels.find(symbol) != bssLabels.end()) {
+        return Section::BSS;
+    }
+    return Section::NONE;
 }
