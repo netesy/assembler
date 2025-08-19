@@ -38,6 +38,7 @@ struct Instruction {
     bool is_label = false;
     std::string label;
     std::variant<std::string, int64_t> data; // For .asciz or .quad
+    bool is_locked = false;
 
     uint64_t address = 0;
     uint64_t size = 0;

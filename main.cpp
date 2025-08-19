@@ -8,26 +8,18 @@ using namespace std;
 int main(int argc, char* argv[]) {
     std::string asmCode = R"(
 .section .data
-    val1: .quad 10
-    val2: .quad 5
-    result: .quad 0
+    counter: .quad 0
 
 .section .text
 .global _start
 _start:
-    ; Read values from memory
-    mov rax, [val1]     ; rax = 10
-    mov rbx, [val2]     ; rbx = 5
+    ; Atomically add 1 to the counter variable in memory
+    lock add [counter], 1
 
-    ; Perform arithmetic
-    add rax, rbx        ; rax = 15
-
-    ; Write result back to memory
-    mov [result], rax   ; result = 15
-
-    ; For verification, read the result back and use it as the exit code
-    mov rdi, [result]   ; exit_code = 15
-    mov rax, 60         ; syscall number for sys_exit
+    ; For verification, read the counter's value and use it as the exit code.
+    ; The exit code should be 1.
+    mov rdi, [counter]
+    mov rax, 60
     syscall
 )";
 
