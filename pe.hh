@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <memory>
 #include <cstdint>
+#include "assembler.hh"
 
 
 namespace {
@@ -45,7 +46,7 @@ public:
     // Main method to generate an executable
     bool generateExecutable(const std::string& outputFile,
                             const std::vector<uint8_t>& code,
-                            const std::unordered_map<std::string, uint64_t>& symbols = {});
+                            const std::unordered_map<std::string, SymbolEntry>& symbols = {});
 
     // Section management
     void addSection(const std::string& name, const std::vector<uint8_t>& data,

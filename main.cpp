@@ -76,7 +76,7 @@ _start:
     peGen.addImport("KERNEL32.dll", {"ExitProcess"});
     peGen.setSubsystem(IMAGE_SUBSYSTEM_WINDOWS_CUI);
 
-    if (peGen.generateExecutable(outputFile + ".exe", assembler.getMachineCode())) {
+    if (peGen.generateExecutable(outputFile + ".exe", assembler.getMachineCode(), symbols)) {
         std::cout << "PE Executable generated successfully" << std::endl;
     } else {
         std::cerr << "Error: " << peGen.getLastError() << std::endl;
