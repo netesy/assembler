@@ -36,7 +36,8 @@ public:
                      const std::string &outputFile,
                      const std::unordered_map<std::string, SymbolEntry> &symbols,
                      const std::vector<uint8_t> &dataSection,
-                     uint64_t entryPoint);
+                     uint64_t entryPoint,
+                     uint64_t dataBase);
 
     // Configuration
     void setBaseAddress(uint64_t address);

@@ -1,839 +1,305 @@
 #include "assembler.hh"
+#include <stdexcept>
+#include <iostream>
+#include <sstream>
+#include <map>
 
-std::unordered_map<std::string, uint8_t> opcodeMap = {{"MOV", 0x01},  {"ADD", 0x02}, {"SUB", 0x03},
-                                                      {"CMP", 0x09},  {"JE", 0x0A},  {"JNE", 0x0B},
-                                                      {"JG", 0x0C},   {"JL", 0x0D},  {"JMP", 0x04},
-                                                      {"CALL", 0x05}, {"RET", 0x06}, {"PUSH", 0x07},
-                                                      {"POP", 0x08},  {"AND", 0x0E}, {"OR", 0x0F},
-                                                      {"XOR", 0x10},  {"NOT", 0x11}, {"SHL", 0x12},
-                                                      {"SHR", 0x13},  {"ROL", 0x14}, {"ROR", 0x15},
-                                                      {"BT", 0x16},   {"BTS", 0x17}, {"BTR", 0x18}};
+// Maps x86-64 register names to their 3-bit encoding.
+// The 4th bit (for R8-R15) is handled by the REX.B/REX.R prefix.
+static const std::map<std::string, uint8_t> register_map = {
+    {"rax", 0}, {"eax", 0}, {"ax", 0}, {"al", 0},
+    {"rcx", 1}, {"ecx", 1}, {"cx", 1}, {"cl", 1},
+    {"rdx", 2}, {"edx", 2}, {"dx", 2}, {"dl", 2},
+    {"rbx", 3}, {"ebx", 3}, {"bx", 3}, {"bl", 3},
+    {"rsp", 4}, {"esp", 4}, {"sp", 4}, {"spl", 4},
+    {"rbp", 5}, {"ebp", 5}, {"bp", 5}, {"bpl", 5},
+    {"rsi", 6}, {"esi", 6}, {"si", 6}, {"sil", 6},
+    {"rdi", 7}, {"edi", 7}, {"di", 7}, {"dil", 7},
+    {"r8", 0}, {"r8d", 0}, {"r8w", 0}, {"r8b", 0},
+    {"r9", 1}, {"r9d", 1}, {"r9w", 1}, {"r9b", 1},
+    {"r10", 2}, {"r10d", 2}, {"r10w", 2}, {"r10b", 2},
+    {"r11", 3}, {"r11d", 3}, {"r11w", 3}, {"r11b", 3},
+    {"r12", 4}, {"r12d", 4}, {"r12w", 4}, {"r12b", 4},
+    {"r13", 5}, {"r13d", 5}, {"r13w", 5}, {"r13b", 5},
+    {"r14", 6}, {"r14d", 6}, {"r14w", 6}, {"r14b", 6},
+    {"r15", 7}, {"r15d", 7}, {"r15w", 7}, {"r15b", 7},
+};
 
-std::unordered_map<std::string, uint8_t> registerMap = {{"R0", 0x00},
-                                                        {"R1", 0x01},
-                                                        {"R2", 0x02},
-                                                        {"R3", 0x03},
-                                                        {"R4", 0x04},
-                                                        {"R5", 0x05},
-                                                        {"R6", 0x06},
-                                                        {"R7", 0x07}};
+static bool is_extended_register(const std::string& reg) {
+    if (reg.length() < 2 || reg[0] != 'r') return false;
+    if (isdigit(reg[1])) {
+        if (reg.length() >= 3 && isdigit(reg[2])) {
+            return std::stoi(reg.substr(1)) >= 8; // Handles r10-r15
+        }
+        return reg[1] >= '8'; // Handles r8, r9
+    }
+    return false;
+}
 
-Assembler::Assembler()
-    : currentAddress(0)
-    , dataAddress(0)
-    , dataSectionBase(0x00600000) // Explicitly initialize dataSectionBase
-{}
+Assembler::Assembler(uint64_t textBase, uint64_t dataBase)
+    : currentSection(Section::TEXT), textSectionBase(textBase), dataSectionBase(dataBase), entryPoint(0) {}
 
-std::vector<Instruction> Assembler::parse(const std::string &code)
-{
+bool Assembler::assemble(const std::string &source, const std::string &outputFile) {
+    try {
+        auto instructions = parse(source);
+        first_pass(instructions);
+        second_pass(instructions);
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Assembly Error: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+std::vector<Instruction> Assembler::parse(const std::string& source) {
     std::vector<Instruction> instructions;
-    std::istringstream stream(code);
+    std::istringstream stream(source);
     std::string line;
+    Section current_section = Section::TEXT;
 
     while (std::getline(stream, line)) {
-        std::istringstream lineStream(line);
-        std::string mnemonic;
-        lineStream >> mnemonic;
-
-        if (mnemonic.empty() || mnemonic[0] == '#' || mnemonic == ".global")
-            continue; // Skip comments and directives we don't handle
-
-        Instruction instr;
-        instr.mnemonic = mnemonic;
-        std::string operand;
-
-        while (lineStream >> operand) {
-            // Remove trailing comma if present
-            if (!operand.empty() && operand.back() == ',') {
-                operand.pop_back();
-            }
-            if (!operand.empty()) {
-                instr.operands.push_back(operand);
-            }
+        // Remove comments
+        if (auto pos = line.find(';'); pos != std::string::npos) {
+            line = line.substr(0, pos);
         }
 
+        std::istringstream line_stream(line);
+        std::string first_token;
+        line_stream >> first_token;
+
+        if (first_token.empty()) continue;
+
+        if (first_token == ".section") {
+            std::string section_name;
+            line_stream >> section_name;
+            if (section_name == ".data") current_section = Section::DATA;
+            else if (section_name == ".text") current_section = Section::TEXT;
+            else if (section_name == ".bss") current_section = Section::BSS;
+            continue;
+        }
+
+        if (first_token.back() == ':') {
+            std::string label_name = first_token.substr(0, first_token.size() - 1);
+            Instruction label_instr;
+            label_instr.is_label = true;
+            label_instr.label = label_name;
+            label_instr.section = current_section;
+
+            std::string next_token;
+            line_stream >> next_token;
+
+            if (next_token == ".asciz") {
+                std::string str_data;
+                std::getline(line_stream, str_data);
+                if (auto pos = str_data.find_first_not_of(" \t\""); pos != std::string::npos) str_data = str_data.substr(pos);
+                if (auto pos = str_data.find_last_of('\"'); pos != std::string::npos) str_data = str_data.substr(0, pos);
+                label_instr.data_str = str_data;
+                instructions.push_back(label_instr);
+                continue;
+            }
+
+            instructions.push_back(label_instr);
+            if (next_token.empty()) continue;
+            first_token = next_token;
+        }
+
+        if (first_token == ".global") {
+            std::string symbol_name;
+            line_stream >> symbol_name;
+            global_symbols.insert(symbol_name);
+            continue;
+        }
+
+        Instruction instr;
+        instr.mnemonic = first_token;
+        instr.section = current_section;
+
+        std::string operand_str;
+        if (std::getline(line_stream, operand_str)) {
+            std::stringstream ss(operand_str);
+            std::string operand;
+            while(std::getline(ss, operand, ',')) {
+                // trim whitespace
+                if (auto pos = operand.find_first_not_of(" \t"); pos != std::string::npos) {
+                    operand = operand.substr(pos);
+                }
+                if (auto pos = operand.find_last_not_of(" \t"); pos != std::string::npos) {
+                    operand = operand.substr(0, pos + 1);
+                }
+                if (!operand.empty()) {
+                    instr.operands.push_back(operand);
+                }
+            }
+        }
         instructions.push_back(instr);
     }
     return instructions;
 }
 
-uint32_t Assembler::parseOperand(const std::string &operand)
-{
-    std::cout << "Parsing operand: '" << operand << "' ";
+void Assembler::first_pass(const std::vector<Instruction>& instructions) {
+    uint64_t text_offset = 0;
+    uint64_t data_offset = 0;
 
-    // Validate operand is not empty
-    if (operand.empty()) {
-        throw std::runtime_error("Empty operand");
-    }
-
-    // Check if this is a memory dereference like [message_len] or [R1+4]
-    if (operand.size() >= 2 && operand[0] == '[' && operand[operand.size()-1] == ']') {
-        std::string innerOperand = operand.substr(1, operand.size() - 2);
-        std::cout << "(memory dereference of '" << innerOperand << "') ";
-
-        // Handle complex memory addressing like [R1+offset]
-        size_t plusPos = innerOperand.find('+');
-        size_t minusPos = innerOperand.find('-');
-        
-        if (plusPos != std::string::npos || minusPos != std::string::npos) {
-            // Complex addressing mode [reg+offset] or [reg-offset]
-            size_t opPos = (plusPos != std::string::npos) ? plusPos : minusPos;
-            std::string baseReg = innerOperand.substr(0, opPos);
-            std::string offsetStr = innerOperand.substr(opPos + 1);
-            
-            // Validate base register
-            if (registerMap.find(baseReg) == registerMap.end()) {
-                throw std::runtime_error("Invalid base register in memory reference: " + baseReg);
-            }
-            
-            // Parse offset
-            uint32_t offset = parseOperandValue(offsetStr);
-            if (minusPos != std::string::npos) {
-                offset = static_cast<uint32_t>(-static_cast<int32_t>(offset));
-            }
-            
-            std::cout << "-> complex memory [" << baseReg << (plusPos != std::string::npos ? "+" : "-") << offsetStr << "]\n";
-            // For now, return the offset (TODO: implement proper complex addressing)
-            return offset;
-        } else {
-            // Simple memory dereference [symbol] or [register]
-            if (registerMap.find(innerOperand) != registerMap.end()) {
-                std::cout << "-> memory dereference of register " << innerOperand << "\n";
-                return registerMap[innerOperand];
-            } else {
-                // Symbol dereference - return the value at that address
-                uint32_t address = parseOperandValue(innerOperand);
-                std::cout << "-> memory dereference of symbol at 0x" << std::hex << address << std::dec << "\n";
-                return address;
-            }
-        }
-    }
-
-    // Check for register operand
-    if (registerMap.find(operand) != registerMap.end()) {
-        uint8_t regNum = registerMap[operand];
-        if (regNum > 7) {
-            throw std::runtime_error("Invalid register number: " + operand);
-        }
-        std::cout << "-> register: " << (int)regNum << "\n";
-        return regNum;
-    }
-
-    // Check for immediate values (numeric literals)
-    if (operand[0] == '#') {
-        // Explicit immediate value marker
-        std::string numStr = operand.substr(1);
-        try {
-            int value = std::stoi(numStr);
-            if (value < -32768 || value > 65535) {
-                throw std::runtime_error("Immediate value out of range: " + operand);
-            }
-            std::cout << "-> immediate value: " << value << "\n";
-            return static_cast<uint32_t>(value);
-        } catch (const std::invalid_argument&) {
-            throw std::runtime_error("Invalid immediate value: " + operand);
-        }
-    }
-
-    // Try to parse as numeric literal
-    try {
-        int value = std::stoi(operand);
-        if (value < -32768 || value > 65535) {
-            throw std::runtime_error("Numeric literal out of range: " + operand);
-        }
-        std::cout << "-> numeric literal: " << value << "\n";
-        return static_cast<uint32_t>(value);
-    } catch (const std::invalid_argument&) {
-        // Not a number, continue to symbol lookup
-    }
-
-    // Symbol lookup (labels)
-    if (labels.find(operand) != labels.end()) {
-        std::cout << "-> text label: 0x" << std::hex << labels[operand] << std::dec << "\n";
-        return labels[operand];
-    } else if (dataLabels.find(operand) != dataLabels.end()) {
-        std::cout << "-> data label: 0x" << std::hex << dataLabels[operand] << std::dec << "\n";
-        return dataLabels[operand];
-    } else if (bssLabels.find(operand) != bssLabels.end()) {
-        std::cout << "-> bss label: 0x" << std::hex << bssLabels[operand] << std::dec << "\n";
-        return bssLabels[operand];
-    } else {
-        // Unresolved symbol - will be patched later
-        std::cout << "-> unresolved symbol (will be patched later)\n";
-        unresolvedSymbols[operand].push_back(currentAddress);
-        return 0;
-    }
-}
-
-uint32_t Assembler::parseOperandValue(const std::string &operand)
-{
-    std::cout << "Parsing operand value: '" << operand << "' ";
-
-    // Validate operand is not empty
-    if (operand.empty()) {
-        throw std::runtime_error("Empty operand value");
-    }
-
-    // Handle hexadecimal literals (0x prefix)
-    if (operand.size() > 2 && operand.substr(0, 2) == "0x") {
-        try {
-            uint32_t value = static_cast<uint32_t>(std::stoul(operand, nullptr, 16));
-            std::cout << "-> hex literal: 0x" << std::hex << value << std::dec << "\n";
-            return value;
-        } catch (const std::exception&) {
-            throw std::runtime_error("Invalid hexadecimal literal: " + operand);
-        }
-    }
-
-    // Handle binary literals (0b prefix)
-    if (operand.size() > 2 && operand.substr(0, 2) == "0b") {
-        try {
-            uint32_t value = static_cast<uint32_t>(std::stoul(operand.substr(2), nullptr, 2));
-            std::cout << "-> binary literal: 0b" << std::bitset<32>(value) << "\n";
-            return value;
-        } catch (const std::exception&) {
-            throw std::runtime_error("Invalid binary literal: " + operand);
-        }
-    }
-
-    // Symbol lookup
-    if (labels.find(operand) != labels.end()) {
-        std::cout << "-> text label: 0x" << std::hex << labels[operand] << std::dec << "\n";
-        return labels[operand];
-    } else if (dataLabels.find(operand) != dataLabels.end()) {
-        std::cout << "-> data label: 0x" << std::hex << dataLabels[operand] << std::dec << "\n";
-        return dataLabels[operand];
-    } else if (bssLabels.find(operand) != bssLabels.end()) {
-        std::cout << "-> bss label: 0x" << std::hex << bssLabels[operand] << std::dec << "\n";
-        return bssLabels[operand];
-    }
-
-    // Handle decimal numeric literals
-    try {
-        long long value = std::stoll(operand);
-        if (value < 0 || value > UINT32_MAX) {
-            throw std::runtime_error("Numeric value out of 32-bit range: " + operand);
-        }
-        std::cout << "-> numeric literal: " << value << "\n";
-        return static_cast<uint32_t>(value);
-    } catch (const std::invalid_argument&) {
-        // Not a number, treat as unresolved symbol
-        std::cout << "-> unresolved symbol (will be patched later)\n";
-        unresolvedSymbols[operand].push_back(currentAddress);
-        return 0;
-    } catch (const std::out_of_range&) {
-        throw std::runtime_error("Numeric value out of range: " + operand);
-    }
-}
-
-uint32_t Assembler::encodeInstruction(const Instruction &instr)
-{
-    if (opcodeMap.find(instr.mnemonic) == opcodeMap.end()) {
-        throw std::runtime_error("Invalid mnemonic: " + instr.mnemonic);
-    }
-
-    uint8_t opcode = opcodeMap[instr.mnemonic];
-    uint8_t mode = 0;
-    uint8_t reg1 = 0;
-    uint8_t reg2_or_imm = 0;
-    uint32_t immediate = 0;
-    bool hasImmediate = false;
-
-    if (instr.operands.size() == 2) {
-        // Two operand instruction: dest, src
-        std::string destOp = instr.operands[0];
-        std::string srcOp = instr.operands[1];
-        
-        // Parse destination operand (should be register)
-        if (registerMap.find(destOp) != registerMap.end()) {
-            reg1 = registerMap[destOp];
-        } else {
-            throw std::runtime_error("Invalid destination operand: " + destOp);
-        }
-        
-        // Parse source operand and determine addressing mode
-        if (registerMap.find(srcOp) != registerMap.end()) {
-            // reg-reg mode
-            mode = 0;
-            reg2_or_imm = registerMap[srcOp];
-        } else if (srcOp.size() >= 2 && srcOp[0] == '[' && srcOp[srcOp.size()-1] == ']') {
-            // reg-mem mode (memory dereference)
-            mode = 2;
-            std::string innerOperand = srcOp.substr(1, srcOp.size() - 2);
-            immediate = parseOperandValue(innerOperand);
-            hasImmediate = true;
-        } else {
-            // reg-imm mode (immediate value or symbol)
-            mode = 1;
-            immediate = parseOperandValue(srcOp);
-            hasImmediate = true;
-        }
-    } else if (instr.operands.size() == 1) {
-        // Single operand instruction
-        std::string op = instr.operands[0];
-        
-        if (registerMap.find(op) != registerMap.end()) {
-            // Register operand
-            mode = 0;
-            reg1 = registerMap[op];
-        } else if (op.size() >= 2 && op[0] == '[' && op[op.size()-1] == ']') {
-            // Memory operand
-            mode = 2;
-            std::string innerOperand = op.substr(1, op.size() - 2);
-            immediate = parseOperandValue(innerOperand);
-            hasImmediate = true;
-        } else {
-            // Immediate operand
-            mode = 1;
-            immediate = parseOperandValue(op);
-            hasImmediate = true;
-        }
-    }
-
-    // Encode instruction: [opcode:8][mode:8][reg1:8][reg2/imm:8] for first 32 bits
-    // Store immediate separately for now to maintain compatibility
-    uint32_t encoded = 0;
-    encoded |= (static_cast<uint32_t>(opcode) << 24);
-    encoded |= (static_cast<uint32_t>(mode) << 16);
-    encoded |= (static_cast<uint32_t>(reg1) << 8);
-    encoded |= static_cast<uint32_t>(reg2_or_imm);
-
-    // TODO: Handle full 64-bit instruction format with immediate values
-    // For now, we'll store immediate in the lower bits if it fits
-    if (hasImmediate && immediate <= 0xFF) {
-        encoded = (encoded & 0xFFFFFF00) | (immediate & 0xFF);
-    }
-
-    return encoded;
-}
-
-void Assembler::resolveLabels(std::vector<Instruction> &instructions)
-{
-    // Define base addresses for each section
-    textSectionBase = 0x00400000;  // Common base address for text section
-    dataSectionBase = 0x00600000;  // Common base address for data section
-    bssSectionBase = 0x00800000;   // Common base address for bss section
-
-    // Reset counters for each section
-    currentAddress = textSectionBase;
-    dataAddress = dataSectionBase;
-    bssAddress = bssSectionBase;
-
-    // First pass: identify all labels
-    for (size_t i = 0; i < instructions.size(); i++) {
-        if (instructions[i].mnemonic.back() == ':') { // Label detected
-            std::string labelName = instructions[i].mnemonic.substr(0,
-                                                                    instructions[i].mnemonic.size() - 1);
-            SymbolEntry entry;
-            entry.name = labelName;
-            entry.isGlobal = (!labelName.empty() && labelName[0] == '_');
-            entry.isExternal = false;
-
-            // Assign address based on current section
-            switch (instructions[i].section) {
-            case Section::TEXT:
-                labels[labelName] = currentAddress;
-                entry.address = currentAddress;
-                break;
-            case Section::DATA:
-                dataLabels[labelName] = dataAddress;
-                entry.address = dataAddress;
-                break;
-            case Section::BSS:
-                bssLabels[labelName] = bssAddress;
-                entry.address = bssAddress;
-                break;
-            }
-            symbolTable[labelName] = entry;
-            instructions.erase(instructions.begin() + i);
-            i--;
-        } else if (instructions[i].mnemonic == ".data") {
-            if (instructions[i].operands.size() >= 2) {
-                dataLabels[instructions[i].operands[0]] = dataAddress;
-                int dataSize = std::stoi(instructions[i].operands[1]);
-                dataAddress += dataSize;
-            }
-        } else if (instructions[i].mnemonic == ".bss") {
-            if (instructions[i].operands.size() >= 2) {
-                bssLabels[instructions[i].operands[0]] = bssAddress;
-                int bssSize = std::stoi(instructions[i].operands[1]);
-                bssAddress += bssSize;
-            }
-        } else if (instructions[i].section == Section::TEXT) {
-            // Only increment address for actual instructions in TEXT section
-            currentAddress += 4;
-        }
-    }
-
-    // Validate all symbol references before patching
-    validateSymbolReferences();
-    
-    // Patch unresolved symbols now that we have all labels
-    std::vector<std::string> undefinedSymbols;
-    
-    for (const auto& symbol : unresolvedSymbols) {
-        bool symbolFound = false;
-        
-        if (labels.find(symbol.first) != labels.end()) {
-            patchUnresolvedSymbols(symbol.first, labels[symbol.first]);
-            symbolFound = true;
-        } else if (dataLabels.find(symbol.first) != dataLabels.end()) {
-            patchUnresolvedSymbols(symbol.first, dataLabels[symbol.first]);
-            symbolFound = true;
-        } else if (bssLabels.find(symbol.first) != bssLabels.end()) {
-            patchUnresolvedSymbols(symbol.first, bssLabels[symbol.first]);
-            symbolFound = true;
-        }
-        
-        if (!symbolFound) {
-            undefinedSymbols.push_back(symbol.first);
-        }
-    }
-    
-    // Report undefined symbols
-    if (!undefinedSymbols.empty()) {
-        std::string errorMsg = "Undefined symbols: ";
-        for (size_t i = 0; i < undefinedSymbols.size(); ++i) {
-            if (i > 0) errorMsg += ", ";
-            errorMsg += undefinedSymbols[i];
-        }
-        throw std::runtime_error(errorMsg);
-    }
-
-    // Set entry point if _start is defined
-    auto it = labels.find("_start");
-    if (it != labels.end()) {
-        entryPoint = it->second;
-        std::cout << "DEBUG: _start label found at address 0x" << std::hex << entryPoint << std::dec << "\n";
-    } else {
-        throw std::runtime_error("No _start label found");
-    }
-}
-
-void Assembler::resolveSymbols()
-{
-    for (const auto &sym : symbolTable) {
-        if (sym.second.isExternal) {
-            // Generate relocation entry for external symbols
-            RelocationEntry reloc;
-            reloc.symbol.name = sym.first;
-            reloc.offset = sym.second.address;
-            relocationEntries.push_back(reloc);
-        }
-    }
-}
-
-bool Assembler::assemble(const std::string &inputFile, const std::string &outputFile)
-{
-    // std::ifstream file(inputFile);
-    // if (!file.is_open()) {
-    //     std::cerr << "Error: Cannot open input file.\n";
-    //     return false;
-    // }
-
-    // std::stringstream buffer;
-    // buffer << file.rdbuf();
-    // file.close();
-
-    // std::vector<Instruction> instructions = parse(buffer.str());
-
-    try {
-        std::vector<Instruction> instructions = parse(inputFile);
-
-        // First pass: mark all instructions with their section
-        Section currentSection = Section::TEXT;
-        for (auto& instr : instructions) {
-            if (instr.mnemonic == ".text") {
-                currentSection = Section::TEXT;
-                continue;
-            } else if (instr.mnemonic == ".data") {
-                currentSection = Section::DATA;
-                continue;
-            } else if (instr.mnemonic == ".bss") {
-                currentSection = Section::BSS;
-                continue;
-            }
-
-            instr.section = currentSection;
-        }
-
-        // Process sections and resolve labels
-        processDataSection(instructions);
-        resolveLabels(instructions);
-
-        // Second pass: generate machine code
-        currentAddress = textSectionBase;  // Reset address counter for code generation
-        for (const auto& instr : instructions) {
+    for (const auto& instr : instructions) {
+        if (instr.is_label) {
+            uint64_t address = 0;
             if (instr.section == Section::TEXT) {
-                uint32_t encoded = encodeInstruction(instr);
-                textSection.push_back(encoded >> 24);
-                textSection.push_back((encoded >> 16) & 0xFF);
-                textSection.push_back((encoded >> 8) & 0xFF);
-                textSection.push_back(encoded & 0xFF);
-                currentAddress += 4;
+                address = textSectionBase + text_offset;
+            } else if (instr.section == Section::DATA) {
+                address = dataSectionBase + data_offset;
             }
-        }
 
-        return true;
-    } catch (const std::exception& e) {
-        std::cerr << "Assembly error: " << e.what() << std::endl;
-        return false;
-    }
-}
+            symbolTable[instr.label] = {
+                instr.label,
+                address,
+                global_symbols.count(instr.label) > 0,
+                false
+            };
 
-void Assembler::patchUnresolvedSymbols(const std::string& symbol, uint64_t address) {
-    if (unresolvedSymbols.find(symbol) == unresolvedSymbols.end()) {
-        return; // No references to patch
-    }
+            if (instr.label == "_start") {
+                entryPoint = address;
+            }
 
-    std::cout << "Patching symbol '" << symbol << "' with address 0x" << std::hex << address << std::dec << "\n";
-
-    for (uint64_t instructionAddress : unresolvedSymbols[symbol]) {
-        // Calculate the byte offset in the text section
-        uint64_t byteOffset = instructionAddress - textSectionBase;
-        
-        if (byteOffset >= textSection.size()) {
-            std::cerr << "Warning: Patch offset " << byteOffset << " is beyond text section size " << textSection.size() << "\n";
-            continue;
-        }
-
-        // Calculate instruction index (each instruction is 4 bytes)
-        size_t instrIndex = byteOffset / 4;
-        if (instrIndex * 4 + 3 >= textSection.size()) {
-            std::cerr << "Warning: Instruction at offset " << byteOffset << " extends beyond text section\n";
-            continue;
-        }
-
-        // Read the current instruction (little-endian)
-        uint32_t currentInstr = 0;
-        currentInstr |= textSection[instrIndex * 4];
-        currentInstr |= (textSection[instrIndex * 4 + 1] << 8);
-        currentInstr |= (textSection[instrIndex * 4 + 2] << 16);
-        currentInstr |= (textSection[instrIndex * 4 + 3] << 24);
-
-        // Extract instruction components
-        uint8_t opcode = (currentInstr >> 24) & 0xFF;
-        uint8_t mode = (currentInstr >> 16) & 0xFF;
-        uint8_t reg1 = (currentInstr >> 8) & 0xFF;
-        uint8_t reg2_or_imm = currentInstr & 0xFF;
-
-        std::cout << "  Patching instruction at 0x" << std::hex << instructionAddress 
-                  << " (opcode=0x" << (int)opcode << ", mode=" << (int)mode << ")\n";
-
-        // Calculate relative address for different addressing modes
-        uint32_t patchValue = 0;
-        if (mode == 1 || mode == 2) { // Immediate or memory mode
-            // For cross-section references, use absolute address
-            if ((instructionAddress >= textSectionBase && instructionAddress < textSectionBase + 0x100000) &&
-                (address >= dataSectionBase && address < dataSectionBase + 0x100000)) {
-                // Text to data section reference - use absolute address
-                patchValue = static_cast<uint32_t>(address);
-            } else if ((instructionAddress >= textSectionBase && instructionAddress < textSectionBase + 0x100000) &&
-                       (address >= bssSectionBase && address < bssSectionBase + 0x100000)) {
-                // Text to BSS section reference - use absolute address
-                patchValue = static_cast<uint32_t>(address);
-            } else {
-                // Same section or relative reference
-                int64_t relativeAddr = static_cast<int64_t>(address) - static_cast<int64_t>(instructionAddress + 4);
-                if (relativeAddr >= INT32_MIN && relativeAddr <= INT32_MAX) {
-                    patchValue = static_cast<uint32_t>(relativeAddr);
+            if (!instr.data_str.empty()) {
+                data_offset += instr.data_str.length() + 1; // +1 for null terminator
+            }
+        } else if (instr.section == Section::TEXT && !instr.mnemonic.empty()) {
+            // Rough estimation of instruction size. This will be refined in second pass.
+            // For now, this is a placeholder as the exact encoding is complex.
+            // Let's assume a simplified encoding scheme for now.
+            if(instr.mnemonic == "syscall") text_offset += 2;
+            else if(instr.mnemonic == "mov" && instr.operands.size() == 2) {
+                if(register_map.count(instr.operands[0]) && !register_map.count(instr.operands[1])) {
+                    // mov reg, imm
+                    text_offset += 7; // REX.W + opcode + ModR/M + 4-byte immediate
                 } else {
-                    patchValue = static_cast<uint32_t>(address);
+                    // mov reg, reg
+                    text_offset += 3;
                 }
             }
+             else if(instr.mnemonic == "add" || instr.mnemonic == "sub") text_offset += 4;
+        }
+    }
+}
 
-            // For immediate mode, store in the lower 8 bits if it fits
-            if (mode == 1 && patchValue <= 0xFF) {
-                reg2_or_imm = static_cast<uint8_t>(patchValue);
+void Assembler::second_pass(const std::vector<Instruction>& instructions) {
+    textSection.clear();
+    dataSection.clear();
+
+    for (const auto& instr : instructions) {
+        if (instr.is_label && !instr.data_str.empty()) {
+            dataSection.insert(dataSection.end(), instr.data_str.begin(), instr.data_str.end());
+            dataSection.push_back(0); // Null terminator for .asciz
+        } else if (instr.section == Section::TEXT && !instr.mnemonic.empty()) {
+            encode_x86_64(instr);
+        }
+    }
+}
+
+void Assembler::encode_x86_64(const Instruction& instr) {
+    if (instr.mnemonic == "syscall") {
+        textSection.push_back(0x0F);
+        textSection.push_back(0x05);
+        return;
+    }
+
+    if (instr.operands.size() != 2) {
+        throw std::runtime_error("Unsupported number of operands for " + instr.mnemonic);
+    }
+
+    std::string dst = instr.operands[0];
+    std::string src = instr.operands[1];
+
+    auto it_dst = register_map.find(dst);
+    if (it_dst == register_map.end()) {
+        throw std::runtime_error("Unknown destination register: " + dst);
+    }
+    uint8_t dst_code = it_dst->second;
+
+    uint8_t REX_W = 0x48; // 64-bit operand size
+    uint8_t REX_R = is_extended_register(dst) ? 0x4C : 0x48;
+    uint8_t REX_B = 0; // Reset for each instruction
+
+    // Handle mov
+    if (instr.mnemonic == "mov") {
+        auto it_src = register_map.find(src);
+        if (it_src != register_map.end()) { // mov reg, reg
+            uint8_t src_code = it_src->second;
+            REX_R = is_extended_register(src) ? 0x4D : 0x48;
+            REX_B = is_extended_register(dst) ? 0x49 : 0x48;
+            if(is_extended_register(src) && is_extended_register(dst)) REX_B = 0x4D;
+
+            textSection.push_back( (REX_W & 0xF0) | (is_extended_register(src) ? 4 : 0) | (is_extended_register(dst) ? 1 : 0) );
+            textSection.push_back(0x89);
+            textSection.push_back(0xC0 | (src_code << 3) | dst_code);
+        } else { // mov reg, imm or mov reg, label
+            uint64_t imm = 0;
+            bool is_label = symbolTable.count(src);
+            if (is_label) {
+                imm = symbolTable.at(src).address;
             } else {
-                // For larger values, we need to extend the instruction format
-                // For now, store what we can in the available space
-                reg2_or_imm = static_cast<uint8_t>(patchValue & 0xFF);
+                imm = std::stoll(src);
+            }
+
+            if (is_extended_register(dst)) REX_B = 0x49;
+            textSection.push_back(REX_B != 0 ? REX_B : REX_W);
+            textSection.push_back(0xB8 + dst_code);
+            for (int i = 0; i < 8; ++i) {
+                textSection.push_back((imm >> (i * 8)) & 0xFF);
             }
         }
-
-        // Reconstruct the instruction
-        uint32_t patchedInstr = 0;
-        patchedInstr |= (static_cast<uint32_t>(opcode) << 24);
-        patchedInstr |= (static_cast<uint32_t>(mode) << 16);
-        patchedInstr |= (static_cast<uint32_t>(reg1) << 8);
-        patchedInstr |= static_cast<uint32_t>(reg2_or_imm);
-
-        // Write back the patched instruction (little-endian)
-        textSection[instrIndex * 4] = patchedInstr & 0xFF;
-        textSection[instrIndex * 4 + 1] = (patchedInstr >> 8) & 0xFF;
-        textSection[instrIndex * 4 + 2] = (patchedInstr >> 16) & 0xFF;
-        textSection[instrIndex * 4 + 3] = (patchedInstr >> 24) & 0xFF;
-
-        std::cout << "  Patched with value 0x" << std::hex << patchValue << std::dec << "\n";
     }
+    // Handle add/sub
+    else if (instr.mnemonic == "add" || instr.mnemonic == "sub") {
+        uint8_t opcode_ext = (instr.mnemonic == "add") ? 0 : 5;
+        long imm = std::stol(src);
 
-    unresolvedSymbols.erase(symbol);
-}
+        REX_B = is_extended_register(dst) ? 0x49 : 0x48;
+        textSection.push_back(REX_B);
 
-void Assembler::findEntryPoint(const std::vector<Instruction> &instructions)
-{
-    for (const auto &instr : instructions) {
-        if (instr.mnemonic == "_start:" || instr.mnemonic == "start:") {
-            entrySymbol = instr.mnemonic.substr(0, instr.mnemonic.size() - 1);
-            return;
+        if (imm >= -128 && imm <= 127) { // 8-bit immediate
+            textSection.push_back(0x83);
+            textSection.push_back(0xC0 | (opcode_ext << 3) | dst_code);
+            textSection.push_back(static_cast<uint8_t>(imm));
+        } else { // 32-bit immediate
+            textSection.push_back(0x81);
+            textSection.push_back(0xC0 | (opcode_ext << 3) | dst_code);
+            uint32_t imm32 = imm;
+            for (int i = 0; i < 4; ++i) {
+                textSection.push_back((imm32 >> (i * 8)) & 0xFF);
+            }
         }
     }
-    throw std::runtime_error("No entry point (_start or start) found");
 }
 
-const std::unordered_map<std::string, SymbolEntry>& Assembler::getSymbols() const {
-    // This is a placeholder until the symbol table is properly populated.
-    // The plan is to populate symbolTable in resolveLabels.
-    // For now, this will likely return an empty map, which will be handled
-    // in the next steps.
-    return symbolTable;
-}
-
-const std::vector<uint8_t>& Assembler::getMachineCode() const {
-    return textSection;
-}
-
-const std::vector<RelocationEntry>& Assembler::getRelocations() const { return relocationEntries; }
+const std::unordered_map<std::string, SymbolEntry>& Assembler::getSymbols() const { return symbolTable; }
 const std::vector<uint8_t>& Assembler::getTextSection() const { return textSection; }
 const std::vector<uint8_t>& Assembler::getDataSection() const { return dataSection; }
-const std::vector<uint8_t>& Assembler::getBssSection() const { return bssSection; }
 uint64_t Assembler::getEntryPoint() const { return entryPoint; }
 
-void Assembler::printDebugInfo() const
-{
+void Assembler::printDebugInfo() const {
     std::cout << "\n==== ASSEMBLER DEBUG INFORMATION ====\n\n";
-
-    // Print text section labels
-    std::cout << "TEXT SECTION LABELS (.text starts at 0x" << std::hex << textSectionBase
-              << std::dec << "):\n";
-    for (const auto &label : labels) {
-        std::cout << "  " << label.first << ": 0x" << std::hex << label.second << std::dec << "\n";
+    std::cout << "SYMBOLS:\n";
+    for(const auto& pair : symbolTable) {
+        std::cout << "  " << pair.first << ": 0x" << std::hex << pair.second.address
+                  << " (global: " << pair.second.isGlobal << ")\n";
     }
-
-    // Print data section labels
-    std::cout << "\nDATA SECTION LABELS (.data starts at 0x" << std::hex << dataSectionBase
-              << std::dec << "):\n";
-    for (const auto &label : dataLabels) {
-        std::cout << "  " << label.first << ": 0x" << std::hex << label.second << std::dec;
-
-        // If this is a string length label, show the value
-        if (label.first.find("_len") != std::string::npos) {
-            std::cout << " (value: " << label.second << ")";
-        }
-        std::cout << "\n";
-    }
-
-    // Print BSS section labels
-    std::cout << "\nBSS SECTION LABELS (.bss starts at 0x" << std::hex << bssSectionBase << std::dec
-              << "):\n";
-    for (const auto &label : bssLabels) {
-        std::cout << "  " << label.first << ": 0x" << std::hex << label.second << std::dec << "\n";
-    }
-
-    // Print unresolved symbols
-    std::cout << "\nUNRESOLVED SYMBOLS:\n";
-    if (unresolvedSymbols.empty()) {
-        std::cout << "  None\n";
-    } else {
-        for (const auto &sym : unresolvedSymbols) {
-            std::cout << "  " << sym.first << " (referenced at:";
-            for (const auto &addr : sym.second) {
-                std::cout << " 0x" << std::hex << addr << std::dec;
-            }
-            std::cout << ")\n";
-        }
-    }
-
-    // Print entry point
     std::cout << "\nENTRY POINT: 0x" << std::hex << entryPoint << std::dec << "\n";
-
-    // Print section sizes
     std::cout << "\nSECTION SIZES:\n";
     std::cout << "  .text: " << textSection.size() << " bytes\n";
     std::cout << "  .data: " << dataSection.size() << " bytes\n";
-    std::cout << "  .bss: " << bssSection.size() << " bytes\n";
 
-    std::cout << "\n";
+    std::cout << "\n.text hexdump:\n";
+    for(size_t i = 0; i < textSection.size(); ++i) {
+        printf("%02x ", textSection[i]);
+        if ((i+1) % 16 == 0) printf("\n");
+    }
+    printf("\n");
+
     std::cout << "\n==== END DEBUG INFORMATION ====\n\n";
 }
 
-void Assembler::processDataSection(std::vector<Instruction> &instructions)
-{
-    std::cout << "DEBUG: processDataSection - dataSectionBase = 0x" << std::hex << dataSectionBase << std::dec << "\n";
-
-    Section currentSection = Section::TEXT;
-
-    // First pass - mark each instruction with its section
-    for (auto& instr : instructions) {
-        if (instr.mnemonic == ".text") {
-            currentSection = Section::TEXT;
-            continue;
-        } else if (instr.mnemonic == ".data") {
-            currentSection = Section::DATA;
-            continue;
-        } else if (instr.mnemonic == ".bss") {
-            currentSection = Section::BSS;
-            continue;
-        }
-
-        instr.section = currentSection;
-    }
-
-    // Second pass - process data declarations
-    currentSection = Section::TEXT;
-    for (auto it = instructions.begin(); it != instructions.end();) {
-        if (it->mnemonic == ".text") {
-            currentSection = Section::TEXT;
-            it = instructions.erase(it);
-            continue;
-        } else if (it->mnemonic == ".data") {
-            currentSection = Section::DATA;
-            it = instructions.erase(it);
-            continue;
-        } else if (it->mnemonic == ".bss") {
-            currentSection = Section::BSS;
-            it = instructions.erase(it);
-            continue;
-        }
-
-        // Process data declarations
-        if (currentSection == Section::DATA && it->mnemonic.back() != ':') {
-            std::string label = it->mnemonic;
-            if (it->operands.size() >= 1) {
-                // Check if it's a string (first char is quote)
-                if (it->operands[0][0] == '"') {
-                    // Find the last quote
-                    std::string rawString = it->operands[0];
-                    size_t lastQuotePos = rawString.rfind('"');
-
-                    // If we don't have a closing quote, join operands
-                    if (lastQuotePos == 0 && it->operands.size() > 1) {
-                        // Join all operands to handle strings with spaces
-                        std::string fullString = it->operands[0];
-                        for (size_t i = 1; i < it->operands.size(); i++) {
-                            fullString += " " + it->operands[i];
-                        }
-
-                        // Find the last quote in the full string
-                        lastQuotePos = fullString.rfind('"');
-                        if (lastQuotePos != std::string::npos && lastQuotePos > 0) {
-                            rawString = fullString;
-                        }
-                    }
-
-                    // Extract the string content
-                    std::string str;
-                    if (lastQuotePos != std::string::npos && lastQuotePos > 0) {
-                        str = rawString.substr(1, lastQuotePos - 1);
-                    } else {
-                        str = rawString.substr(1, rawString.size() - 2);
-                    }
-
-                    // Handle escape sequences
-                    std::string processedStr;
-                    for (size_t i = 0; i < str.size(); i++) {
-                        if (str[i] == '\\' && i + 1 < str.size()) {
-                            switch (str[i+1]) {
-                            case 'n': processedStr += '\n'; break;
-                            case 't': processedStr += '\t'; break;
-                            case 'r': processedStr += '\r'; break;
-                            case '\\': processedStr += '\\'; break;
-                            case '"': processedStr += '"'; break;
-                            default: processedStr += str[i+1];
-                            }
-                            i++; // Skip the next character
-                        } else {
-                            processedStr += str[i];
-                        }
-                    }
-
-                    std::cout << "Processing string data '" << label << "': \""
-                              << processedStr << "\" (length: " << processedStr.length() << ")\n";
-
-                    // Store in data section
-                    uint64_t address = static_cast<uint64_t>(dataSectionBase) + static_cast<uint64_t>(dataSection.size());
-                    dataLabels[label] = address;
-                    SymbolEntry entry;
-                    entry.name = label;
-                    entry.address = address;
-                    entry.isGlobal = (!label.empty() && label[0] == '_');
-                    entry.isExternal = false;
-                    symbolTable[label] = entry;
-                    for (char c : processedStr) {
-                        dataSection.push_back(static_cast<uint8_t>(c));
-                    }
-
-                    // Add null terminator
-                    dataSection.push_back(0);
-
-                    // Store length in symbol table (excluding null terminator)
-                    std::string lenLabel = label + "_len";
-                    dataLabels[lenLabel] = processedStr.length();
-                    SymbolEntry len_entry;
-                    len_entry.name = lenLabel;
-                    len_entry.address = processedStr.length(); // This is a value, not an address.
-                    len_entry.isGlobal = (!lenLabel.empty() && lenLabel[0] == '_');
-                    len_entry.isExternal = false;
-                    symbolTable[lenLabel] = len_entry;
-
-                    std::cout << "  Created data at 0x" << std::hex
-                              << address << std::dec
-                              << " with length " << processedStr.length() << "\n";
-                } else {
-                    // Numeric data
-                    int size = std::stoi(it->operands[0]);
-                    uint64_t address = static_cast<uint64_t>(dataSectionBase) + static_cast<uint64_t>(dataSection.size());
-                    dataLabels[label] = address;
-                    dataSection.resize(dataSection.size() + size);
-
-                    std::cout << "Processing numeric data '" << label
-                              << "': " << size << " bytes at 0x"
-                              << std::hex << address << std::dec << "\n";
-                }
-            }
-            it = instructions.erase(it);
-        } else {
-            ++it;
-        }
-    }
-}
-
-void Assembler::validateSymbolReferences()
-{
-    std::vector<std::string> invalidReferences;
-    
-    for (const auto& symbolRef : unresolvedSymbols) {
-        const std::string& symbolName = symbolRef.first;
-        
-        // Check if symbol exists in any section
-        bool found = (labels.find(symbolName) != labels.end()) ||
-                     (dataLabels.find(symbolName) != dataLabels.end()) ||
-                     (bssLabels.find(symbolName) != bssLabels.end());
-        
-        if (!found) {
-            invalidReferences.push_back(symbolName);
-        }
-    }
-    
-    if (!invalidReferences.empty()) {
-        std::string errorMsg = "Invalid symbol references: ";
-        for (size_t i = 0; i < invalidReferences.size(); ++i) {
-            if (i > 0) errorMsg += ", ";
-            errorMsg += invalidReferences[i];
-        }
-        throw std::runtime_error(errorMsg);
-    }
-}
-
-Section Assembler::getSymbolSection(const std::string& symbol) const
-{
-    if (labels.find(symbol) != labels.end()) {
-        return Section::TEXT;
-    } else if (dataLabels.find(symbol) != dataLabels.end()) {
-        return Section::DATA;
-    } else if (bssLabels.find(symbol) != bssLabels.end()) {
-        return Section::BSS;
-    }
-    return Section::NONE;
-}
+// Stubs for old methods that are not used in the new flow
+const std::vector<uint8_t>& Assembler::getMachineCode() const { return textSection; }
+const std::vector<uint8_t>& Assembler::getBssSection() const { static std::vector<uint8_t> empty; return empty; }
+const std::vector<RelocationEntry>& Assembler::getRelocations() const { static std::vector<RelocationEntry> empty; return empty; }
