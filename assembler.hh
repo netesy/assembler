@@ -22,7 +22,8 @@ enum class OperandType {
     NONE,
     REGISTER,
     IMMEDIATE,
-    MEMORY
+    MEMORY,
+    LABEL
 };
 
 struct Operand {
@@ -38,7 +39,7 @@ struct Instruction {
     bool is_label = false;
     std::string label;
     std::variant<std::string, int64_t> data; // For .asciz or .quad
-    bool is_locked = false;
+    std::string prefix;
 
     uint64_t address = 0;
     uint64_t size = 0;

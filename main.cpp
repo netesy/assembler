@@ -12,13 +12,38 @@ int main(int argc, char* argv[]) {
 
 .section .text
 .global _start
-_start:
-    ; Atomically add 1 to the counter variable in memory
-    lock add [counter], 1
+.global check_value
 
-    ; For verification, read the counter's value and use it as the exit code.
-    ; The exit code should be 1.
-    mov rdi, [counter]
+; This function checks a value passed on the stack.
+; On entry, [rsp] holds the return address, and [rsp+8] holds the argument.
+check_value:
+    mov rbx, [rsp+8]    ; Load argument from the stack into rbx
+    cmp rbx, 123
+    je .success
+
+.failure:
+    mov rax, 99         ; Return 99 on failure
+    ret
+
+.success:
+    mov rax, 42         ; Return 42 on success
+    ret
+
+_start:
+    ; Test brk syscall
+    mov rax, 12
+    mov rdi, 0
+    syscall
+
+    ; Test stack, call, and conditional jumps.
+    mov rax, 123
+    push rax
+    call check_value
+
+    add rsp, 8          ; Clean up stack after call
+
+    ; The result from check_value is in rax. Use it as the exit code.
+    mov rdi, rax        ; Expected exit code: 42
     mov rax, 60
     syscall
 )";
@@ -36,8 +61,6 @@ _start:
     assembler.printDebugInfo();
 
     const auto& symbols = assembler.getSymbols();
-
-    std::cout << "Entry Point: 0x" << std::hex << assembler.getEntryPoint() << std::dec << std::endl;
 
     if (!elfGen.generateElf(
             assembler.getTextSection(),
