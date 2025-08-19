@@ -3,38 +3,14 @@
 #include <iostream>
 #include <sstream>
 #include <map>
+#include <algorithm>
 
-// Maps x86-64 register names to their 3-bit encoding.
-// The 4th bit (for R8-R15) is handled by the REX.B/REX.R prefix.
 static const std::map<std::string, uint8_t> register_map = {
-    {"rax", 0}, {"eax", 0}, {"ax", 0}, {"al", 0},
-    {"rcx", 1}, {"ecx", 1}, {"cx", 1}, {"cl", 1},
-    {"rdx", 2}, {"edx", 2}, {"dx", 2}, {"dl", 2},
-    {"rbx", 3}, {"ebx", 3}, {"bx", 3}, {"bl", 3},
-    {"rsp", 4}, {"esp", 4}, {"sp", 4}, {"spl", 4},
-    {"rbp", 5}, {"ebp", 5}, {"bp", 5}, {"bpl", 5},
-    {"rsi", 6}, {"esi", 6}, {"si", 6}, {"sil", 6},
-    {"rdi", 7}, {"edi", 7}, {"di", 7}, {"dil", 7},
-    {"r8", 0}, {"r8d", 0}, {"r8w", 0}, {"r8b", 0},
-    {"r9", 1}, {"r9d", 1}, {"r9w", 1}, {"r9b", 1},
-    {"r10", 2}, {"r10d", 2}, {"r10w", 2}, {"r10b", 2},
-    {"r11", 3}, {"r11d", 3}, {"r11w", 3}, {"r11b", 3},
-    {"r12", 4}, {"r12d", 4}, {"r12w", 4}, {"r12b", 4},
-    {"r13", 5}, {"r13d", 5}, {"r13w", 5}, {"r13b", 5},
-    {"r14", 6}, {"r14d", 6}, {"r14w", 6}, {"r14b", 6},
-    {"r15", 7}, {"r15d", 7}, {"r15w", 7}, {"r15b", 7},
+    {"rax", 0}, {"rcx", 1}, {"rdx", 2}, {"rbx", 3},
+    {"rsp", 4}, {"rbp", 5}, {"rsi", 6}, {"rdi", 7},
+    {"r8", 8}, {"r9", 9}, {"r10", 10}, {"r11", 11},
+    {"r12", 12}, {"r13", 13}, {"r14", 14}, {"r15", 15},
 };
-
-static bool is_extended_register(const std::string& reg) {
-    if (reg.length() < 2 || reg[0] != 'r') return false;
-    if (isdigit(reg[1])) {
-        if (reg.length() >= 3 && isdigit(reg[2])) {
-            return std::stoi(reg.substr(1)) >= 8;
-        }
-        return reg[1] >= '8';
-    }
-    return false;
-}
 
 Assembler::Assembler(uint64_t textBase, uint64_t dataBase)
     : currentSection(Section::TEXT), textSectionBase(textBase), dataSectionBase(dataBase), entryPoint(0) {}
@@ -51,6 +27,28 @@ bool Assembler::assemble(const std::string &source, const std::string &outputFil
     }
 }
 
+Operand Assembler::parse_operand(const std::string& op_str) {
+    if (op_str.empty()) return {OperandType::NONE};
+
+    if (op_str.front() == '[' && op_str.back() == ']') {
+        return {OperandType::MEMORY, op_str.substr(1, op_str.length() - 2)};
+    }
+
+    if (register_map.count(op_str)) {
+        return {OperandType::REGISTER, op_str};
+    }
+
+    try {
+        std::stoll(op_str);
+        return {OperandType::IMMEDIATE, op_str};
+    } catch (const std::invalid_argument&) {
+        // Not a number, so it must be a label for a memory operand
+        // This case is typically handled by the [] syntax, but we can be lenient
+        return {OperandType::MEMORY, op_str};
+    }
+}
+
+
 std::vector<Instruction> Assembler::parse(const std::string& source) {
     std::vector<Instruction> instructions;
     std::istringstream stream(source);
@@ -58,9 +56,7 @@ std::vector<Instruction> Assembler::parse(const std::string& source) {
     Section current_section = Section::TEXT;
 
     while (std::getline(stream, line)) {
-        if (auto pos = line.find(';'); pos != std::string::npos) {
-            line = line.substr(0, pos);
-        }
+        if (auto pos = line.find(';'); pos != std::string::npos) line = line.substr(0, pos);
 
         std::istringstream line_stream(line);
         std::string token;
@@ -68,10 +64,9 @@ std::vector<Instruction> Assembler::parse(const std::string& source) {
         if (token.empty()) continue;
 
         if (token == ".section") {
-            std::string section_name;
-            line_stream >> section_name;
-            if (section_name == ".data") current_section = Section::DATA;
-            else if (section_name == ".text") current_section = Section::TEXT;
+            line_stream >> token;
+            if (token == ".data") current_section = Section::DATA;
+            else if (token == ".text") current_section = Section::TEXT;
             continue;
         }
 
@@ -90,7 +85,13 @@ std::vector<Instruction> Assembler::parse(const std::string& source) {
                 std::getline(line_stream, str_data);
                 if (auto pos = str_data.find_first_not_of(" \t\""); pos != std::string::npos) str_data = str_data.substr(pos);
                 if (auto pos = str_data.find_last_of('\"'); pos != std::string::npos) str_data = str_data.substr(0, pos);
-                label_instr.data_str = str_data;
+                label_instr.data = str_data;
+                instructions.push_back(label_instr);
+                continue;
+            } else if (next_token == ".quad") {
+                int64_t val;
+                line_stream >> val;
+                label_instr.data = val;
                 instructions.push_back(label_instr);
                 continue;
             }
@@ -101,9 +102,8 @@ std::vector<Instruction> Assembler::parse(const std::string& source) {
         }
 
         if (token == ".global") {
-            std::string symbol_name;
-            line_stream >> symbol_name;
-            global_symbols.insert(symbol_name);
+            line_stream >> token;
+            global_symbols.insert(token);
             continue;
         }
 
@@ -118,7 +118,7 @@ std::vector<Instruction> Assembler::parse(const std::string& source) {
             while(std::getline(ss, operand, ',')) {
                 if (auto pos = operand.find_first_not_of(" \t"); pos != std::string::npos) operand = operand.substr(pos);
                 if (auto pos = operand.find_last_not_of(" \t"); pos != std::string::npos) operand = operand.substr(0, pos + 1);
-                if (!operand.empty()) instr.operands.push_back(operand);
+                if (!operand.empty()) instr.operands.push_back(parse_operand(operand));
             }
         }
         instructions.push_back(instr);
@@ -127,24 +127,25 @@ std::vector<Instruction> Assembler::parse(const std::string& source) {
 }
 
 uint64_t Assembler::get_instruction_size(const Instruction& instr) {
-    if (instr.mnemonic == "ret") return 1;
-    if (instr.mnemonic == "syscall") return 2;
-    if (instr.mnemonic == "call" || instr.mnemonic == "jmp" || instr.mnemonic == "je" || instr.mnemonic == "jne") return 5;
-    if (instr.mnemonic == "mov") {
+    const auto& m = instr.mnemonic;
+    if (m == "ret") return 1;
+    if (m == "syscall") return 2;
+
+    if (m == "mov" || m == "add") {
         if (instr.operands.size() != 2) return 0;
-        if (register_map.count(instr.operands[1])) return 3; // mov reg, reg
-        return 10; // mov reg, imm64
+        const auto& dst = instr.operands[0];
+        const auto& src = instr.operands[1];
+
+        if (dst.type == OperandType::REGISTER && src.type == OperandType::MEMORY) return 7; // REX + Opcode + ModR/M + disp32
+        if (dst.type == OperandType::MEMORY && src.type == OperandType::REGISTER) return 7; // REX + Opcode + ModR/M + disp32
+        if (dst.type == OperandType::REGISTER && src.type == OperandType::REGISTER) return 3; // REX + Opcode + ModR/M
+        if (dst.type == OperandType::REGISTER && src.type == OperandType::IMMEDIATE) {
+            int64_t imm = std::stoll(src.value);
+            if (imm >= -2147483648LL && imm <= 2147483647LL) return 7; // REX + Opcode + ModR/M + imm32
+            return 10; // REX + Opcode + imm64
+        }
     }
-    if (instr.mnemonic == "add" || instr.mnemonic == "sub") {
-        if (instr.operands.size() != 2) return 0;
-        long imm = std::stol(instr.operands[1]);
-        return (imm >= -128 && imm <= 127) ? 4 : 7;
-    }
-    if (instr.mnemonic == "cmp") {
-        if (instr.operands.size() != 2) return 0;
-        return 7; // cmp rax, imm32
-    }
-    return 0;
+    return 0; // Default/unknown
 }
 
 void Assembler::first_pass(std::vector<Instruction>& instructions) {
@@ -154,14 +155,14 @@ void Assembler::first_pass(std::vector<Instruction>& instructions) {
     for (auto& instr : instructions) {
         instr.address = (instr.section == Section::TEXT) ? textSectionBase + text_offset : dataSectionBase + data_offset;
         if (instr.is_label) {
-            symbolTable[instr.label] = {
-                instr.label,
-                instr.address,
-                global_symbols.count(instr.label) > 0,
-                false
-            };
+            symbolTable[instr.label] = { instr.label, instr.address, global_symbols.count(instr.label) > 0, false };
             if (instr.label == "_start") entryPoint = instr.address;
-            if (!instr.data_str.empty()) data_offset += instr.data_str.length() + 1;
+
+            if (std::holds_alternative<std::string>(instr.data)) {
+                data_offset += std::get<std::string>(instr.data).length() + 1;
+            } else if (std::holds_alternative<int64_t>(instr.data)) {
+                data_offset += 8; // .quad
+            }
         } else if (instr.section == Section::TEXT && !instr.mnemonic.empty()) {
             instr.size = get_instruction_size(instr);
             text_offset += instr.size;
@@ -174,9 +175,15 @@ void Assembler::second_pass(const std::vector<Instruction>& instructions) {
     dataSection.clear();
 
     for (const auto& instr : instructions) {
-        if (instr.is_label && !instr.data_str.empty()) {
-            dataSection.insert(dataSection.end(), instr.data_str.begin(), instr.data_str.end());
-            dataSection.push_back(0);
+        if (instr.is_label) {
+            if (std::holds_alternative<std::string>(instr.data)) {
+                const auto& str = std::get<std::string>(instr.data);
+                dataSection.insert(dataSection.end(), str.begin(), str.end());
+                dataSection.push_back(0);
+            } else if (std::holds_alternative<int64_t>(instr.data)) {
+                int64_t val = std::get<int64_t>(instr.data);
+                for(int i=0; i<8; ++i) dataSection.push_back((val >> (i*8)) & 0xFF);
+            }
         } else if (instr.section == Section::TEXT && !instr.mnemonic.empty()) {
             encode_x86_64(instr);
         }
@@ -187,63 +194,60 @@ void Assembler::encode_x86_64(const Instruction& instr) {
     if (instr.mnemonic == "syscall") { textSection.push_back(0x0F); textSection.push_back(0x05); return; }
     if (instr.mnemonic == "ret") { textSection.push_back(0xC3); return; }
 
-    if (instr.mnemonic == "call" || instr.mnemonic == "jmp" || instr.mnemonic == "je" || instr.mnemonic == "jne") {
-        if (instr.operands.size() != 1) throw std::runtime_error("Invalid operands for " + instr.mnemonic);
-        if (!symbolTable.count(instr.operands[0])) throw std::runtime_error("Undefined label: " + instr.operands[0]);
+    if (instr.operands.size() != 2) throw std::runtime_error("Unsupported operands for " + instr.mnemonic);
 
-        uint64_t target_addr = symbolTable.at(instr.operands[0]).address;
-        int32_t rel_addr = target_addr - (instr.address + instr.size);
+    const auto& op1 = instr.operands[0];
+    const auto& op2 = instr.operands[1];
 
-        if (instr.mnemonic == "call") textSection.push_back(0xE8);
-        else if (instr.mnemonic == "jmp") textSection.push_back(0xE9);
-        else if (instr.mnemonic == "je") { textSection.push_back(0x0F); textSection.push_back(0x84); }
-        else if (instr.mnemonic == "jne") { textSection.push_back(0x0F); textSection.push_back(0x85); }
+    uint8_t opcode = 0;
+    if (instr.mnemonic == "mov") opcode = 0x8B; // mov reg, r/m
+    if (instr.mnemonic == "add") opcode = 0x03; // add reg, r/m
 
-        for (int i = 0; i < 4; ++i) textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
-        return;
-    }
-
-    if (instr.operands.size() != 2) throw std::runtime_error("Unsupported number of operands for " + instr.mnemonic);
-
-    std::string dst = instr.operands[0];
-    std::string src = instr.operands[1];
-    if (!register_map.count(dst)) throw std::runtime_error("Unknown destination register: " + dst);
-    uint8_t dst_code = register_map.at(dst);
-
-    if (instr.mnemonic == "mov") {
-        if (register_map.count(src)) { // mov reg, reg
-            uint8_t src_code = register_map.at(src);
-            uint8_t rex = 0x48 | (is_extended_register(src) ? 4 : 0) | (is_extended_register(dst) ? 1 : 0);
-            textSection.push_back(rex);
-            textSection.push_back(0x89);
-            textSection.push_back(0xC0 | (src_code << 3) | dst_code);
-        } else { // mov reg, imm64
-            uint64_t imm = symbolTable.count(src) ? symbolTable.at(src).address : std::stoll(src);
-            uint8_t rex = 0x48 | (is_extended_register(dst) ? 1 : 0);
-            textSection.push_back(rex);
-            textSection.push_back(0xB8 + dst_code);
-            for (int i = 0; i < 8; ++i) textSection.push_back((imm >> (i * 8)) & 0xFF);
-        }
-    } else if (instr.mnemonic == "add" || instr.mnemonic == "sub") {
-        uint8_t opcode_ext = (instr.mnemonic == "add") ? 0 : 5;
-        long imm = std::stol(src);
-        uint8_t rex = 0x48 | (is_extended_register(dst) ? 1 : 0);
+    // reg, r/m
+    if (op1.type == OperandType::REGISTER && op2.type == OperandType::MEMORY) {
+        uint8_t reg_code = register_map.at(op1.value);
+        bool is_ext_reg = reg_code >= 8;
+        uint8_t rex = 0x48 | (is_ext_reg ? 4 : 0);
         textSection.push_back(rex);
-        if (imm >= -128 && imm <= 127) {
-            textSection.push_back(0x83);
-            textSection.push_back(0xC0 | (opcode_ext << 3) | dst_code);
-            textSection.push_back(static_cast<uint8_t>(imm));
-        } else {
-            textSection.push_back(0x81);
-            textSection.push_back(0xC0 | (opcode_ext << 3) | dst_code);
-            for (int i = 0; i < 4; ++i) textSection.push_back((static_cast<uint32_t>(imm) >> (i * 8)) & 0xFF);
-        }
-    } else if (instr.mnemonic == "cmp") {
-        long imm = std::stol(src);
-        if (dst != "rax") throw std::runtime_error("CMP only supported with RAX for now");
-        textSection.push_back(0x48);
-        textSection.push_back(0x3D);
-        for (int i = 0; i < 4; ++i) textSection.push_back((static_cast<uint32_t>(imm) >> (i * 8)) & 0xFF);
+        textSection.push_back(opcode);
+        // ModR/M for [rip+disp32] is mod=00, reg=reg_code, rm=101
+        textSection.push_back( (0b00 << 6) | ((reg_code & 7) << 3) | 0b101 );
+        int32_t disp = symbolTable.at(op2.value).address - (instr.address + instr.size);
+        for(int i=0; i<4; ++i) textSection.push_back((disp >> (i*8)) & 0xFF);
+    }
+    // r/m, reg
+    else if (op1.type == OperandType::MEMORY && op2.type == OperandType::REGISTER) {
+        if (instr.mnemonic == "mov") opcode = 0x89; // mov r/m, reg
+        if (instr.mnemonic == "add") opcode = 0x01; // add r/m, reg
+        uint8_t reg_code = register_map.at(op2.value);
+        bool is_ext_reg = reg_code >= 8;
+        uint8_t rex = 0x48 | (is_ext_reg ? 4 : 0);
+        textSection.push_back(rex);
+        textSection.push_back(opcode);
+        textSection.push_back( (0b00 << 6) | ((reg_code & 7) << 3) | 0b101 );
+        int32_t disp = symbolTable.at(op1.value).address - (instr.address + instr.size);
+        for(int i=0; i<4; ++i) textSection.push_back((disp >> (i*8)) & 0xFF);
+    }
+    // reg, reg
+    else if (op1.type == OperandType::REGISTER && op2.type == OperandType::REGISTER) {
+         if (instr.mnemonic == "mov") opcode = 0x89; // mov r/m, reg
+         if (instr.mnemonic == "add") opcode = 0x01; // add r/m, reg
+         uint8_t dst_code = register_map.at(op1.value);
+         uint8_t src_code = register_map.at(op2.value);
+         uint8_t rex = 0x48 | ( (src_code >= 8) ? 4 : 0) | ( (dst_code >= 8) ? 1 : 0);
+         textSection.push_back(rex);
+         textSection.push_back(opcode);
+         textSection.push_back(0xC0 | ((src_code & 7) << 3) | (dst_code & 7));
+    }
+    // reg, imm
+    else if (op1.type == OperandType::REGISTER && op2.type == OperandType::IMMEDIATE) {
+        uint8_t reg_code = register_map.at(op1.value);
+        uint8_t rex = 0x48 | ((reg_code >= 8) ? 1 : 0);
+        textSection.push_back(rex);
+        textSection.push_back(0xC7);
+        textSection.push_back(0xC0 | (reg_code & 7));
+        int32_t imm = std::stoll(op2.value);
+        for(int i=0; i<4; ++i) textSection.push_back((imm >> (i*8)) & 0xFF);
     }
 }
 
@@ -270,7 +274,3 @@ void Assembler::printDebugInfo() const {
     printf("\n");
     std::cout << "\n==== END DEBUG INFORMATION ====\n\n";
 }
-
-const std::vector<uint8_t>& Assembler::getMachineCode() const { return textSection; }
-const std::vector<uint8_t>& Assembler::getBssSection() const { static std::vector<uint8_t> empty; return empty; }
-const std::vector<RelocationEntry>& Assembler::getRelocations() const { static std::vector<RelocationEntry> empty; return empty; }

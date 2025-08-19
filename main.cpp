@@ -8,36 +8,26 @@ using namespace std;
 int main(int argc, char* argv[]) {
     std::string asmCode = R"(
 .section .data
-    msg: .asciz "Hello from a function!\n"
+    val1: .quad 10
+    val2: .quad 5
+    result: .quad 0
 
 .section .text
 .global _start
-.global print_message
-
-print_message:
-    mov rax, 1
-    mov rdi, 1
-    mov rsi, msg
-    mov rdx, 24
-    syscall
-    ret
-
 _start:
-    call print_message
+    ; Read values from memory
+    mov rax, [val1]     ; rax = 10
+    mov rbx, [val2]     ; rbx = 5
 
-    ; Test conditional jump
-    mov rax, 10
-    cmp rax, 10     ; This will set the Zero Flag
-    jne exit_error  ; This jump should NOT be taken
+    ; Perform arithmetic
+    add rax, rbx        ; rax = 15
 
-    ; Normal exit
-    mov rax, 60
-    mov rdi, 0      ; Exit code 0
-    syscall
+    ; Write result back to memory
+    mov [result], rax   ; result = 15
 
-exit_error:
-    mov rax, 60
-    mov rdi, 1      ; Exit code 1
+    ; For verification, read the result back and use it as the exit code
+    mov rdi, [result]   ; exit_code = 15
+    mov rax, 60         ; syscall number for sys_exit
     syscall
 )";
 
@@ -46,7 +36,7 @@ exit_error:
     Assembler assembler;
     ElfGenerator elfGen(true, 0x400000);
 
-    if (!assembler.assemble(asmCode, outputFile + ".o")) {
+    if (!assembler.assemble(asmCode, outputFile)) {
         std::cerr << "Assembly failed\n";
         return 1;
     }
