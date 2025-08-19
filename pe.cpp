@@ -80,7 +80,7 @@ struct OptionalHeader32 {
     uint32_t SizeOfHeapCommit;
     uint32_t LoaderFlags;
     uint32_t NumberOfRvaAndSizes;
-    DataDirectory DataDirectory[16];
+    DataDirectory dataDirectory[16];
 };
 
 struct OptionalHeader64 {
@@ -113,18 +113,18 @@ struct OptionalHeader64 {
     uint64_t SizeOfHeapCommit;
     uint32_t LoaderFlags;
     uint32_t NumberOfRvaAndSizes;
-    DataDirectory DataDirectory[16];
+    DataDirectory dataDirectory[16];
 };
 
 struct NTHeaders32 {
     uint32_t Signature;
-    FileHeader FileHeader;
+    FileHeader fileHeader;
     OptionalHeader32 OptionalHeader;
 };
 
 struct NTHeaders64 {
     uint32_t Signature;
-    FileHeader FileHeader;
+    FileHeader fileHeader;
     OptionalHeader64 OptionalHeader;
 };
 
@@ -622,8 +622,8 @@ private:
 
             // Set import directory entry
             if (importDirectoryRVA_ != 0) {
-                optHeader.DataDirectory[1].VirtualAddress = importDirectoryRVA_;
-                optHeader.DataDirectory[1].Size = calculateImportDirectorySize();
+                optHeader.dataDirectory[1].VirtualAddress = importDirectoryRVA_;
+                optHeader.dataDirectory[1].Size = calculateImportDirectorySize();
             }
 
             file.write(reinterpret_cast<const char*>(&optHeader), sizeof(optHeader));
@@ -665,8 +665,8 @@ private:
             // Set import directory entry
             if (importDirectoryRVA_ != 0) {
                 uint32_t importSize = calculateImportDirectorySize();
-                optHeader.DataDirectory[1].VirtualAddress = importDirectoryRVA_;
-                optHeader.DataDirectory[1].Size = importSize;
+                optHeader.dataDirectory[1].VirtualAddress = importDirectoryRVA_;
+                optHeader.dataDirectory[1].Size = importSize;
             }
 
             file.write(reinterpret_cast<const char*>(&optHeader), sizeof(optHeader));

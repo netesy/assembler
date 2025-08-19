@@ -18,17 +18,18 @@ int main(int argc, char* argv[]) {
     // }
     std::string asmCode = R"(
 .data
-message "Hello, World!\n"   # String with automatic length
-buffer 100                  # 100 byte buffer
+message: .asciz "Hello, World!\n"   # String with automatic length and null terminator
+buffer: .space 100                  # 100 byte buffer
 
 .text
+.global _start
 _start:
     MOV R0, 1              # stdout
     MOV R1, message        # string address
-    MOV R2, [message_len]  # length is automatically available
+    MOV R2, message_len    # length is automatically available
     MOV R3, 1              # sys_write
 
-        MOV R0, 0              # exit code 0
+    MOV R0, 0              # exit code 0
     MOV R3, 60             # syscall number (sys_exit)
 
 )";
@@ -51,44 +52,35 @@ _start:
         return 1;
     }
 
-   // elfGen.setEntryPoint(assembler.getEntryPoint());
     assembler.printDebugInfo();
-    // Get the machine code and symbols from the assembler
-    const std::vector<uint8_t>& machineCode = assembler.getMachineCode();
-    const std::unordered_map<std::string, uint64_t>& symbols = assembler.getSymbols();
 
-     std::cout << "Entry Point: " <<  assembler.getEntryPoint() << std::endl;
-    // Add imports
-    peGen.addImport("KERNEL32.dll", {"ExitProcess"});
+    // Get the machine code and symbols from the assembler
+    const auto& symbols = assembler.getSymbols();
+
+    std::cout << "Entry Point: 0x" << std::hex << assembler.getEntryPoint() << std::dec << std::endl;
 
     // Generate the final ELF executable using assembler's sections
     if (!elfGen.generateElf(
             assembler.getTextSection(),
             outputFile + ".elf",
-            assembler.getSymbols(),
+            symbols,
             assembler.getDataSection(),
-            0x400000)) {
+            assembler.getEntryPoint())) {
         std::cerr << "ELF generation failed: " << elfGen.getLastError() << std::endl;
         return 1;
     }
 
+    std::cout << "ELF executable generated successfully: " << outputFile << ".elf\n";
+
+    // PE Generation (for windows)
+    peGen.addImport("KERNEL32.dll", {"ExitProcess"});
     peGen.setSubsystem(IMAGE_SUBSYSTEM_WINDOWS_CUI);
 
-    // Generate the executable
-    if (peGen.generateExecutable(outputFile + ".exe", machineCode)) {
-        std::cout << "Pe Executable generated successfully" << std::endl;
+    if (peGen.generateExecutable(outputFile + ".exe", assembler.getMachineCode())) {
+        std::cout << "PE Executable generated successfully" << std::endl;
     } else {
         std::cerr << "Error: " << peGen.getLastError() << std::endl;
     }
 
-   // set executable permissions
-    // std::filesystem::permissions(outputFile,
-    //                              std::filesystem::perms::owner_exec |
-    //                                  std::filesystem::perms::owner_read |
-    //                                  std::filesystem::perms::owner_write,
-    //                              std::filesystem::perm_options::add);
-
-    std::cout << "ELF executable generated successfully: " << argv[2] << "\n";
     return 0;
 }
-

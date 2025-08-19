@@ -35,8 +35,8 @@ std::vector<Instruction> Assembler::parse(const std::string &code)
         std::string mnemonic;
         lineStream >> mnemonic;
 
-        if (mnemonic.empty() || mnemonic[0] == '#')
-            continue; // Skip comments
+        if (mnemonic.empty() || mnemonic[0] == '#' || mnemonic == ".global")
+            continue; // Skip comments and directives we don't handle
 
         Instruction instr;
         instr.mnemonic = mnemonic;
@@ -324,18 +324,27 @@ void Assembler::resolveLabels(std::vector<Instruction> &instructions)
         if (instructions[i].mnemonic.back() == ':') { // Label detected
             std::string labelName = instructions[i].mnemonic.substr(0,
                                                                     instructions[i].mnemonic.size() - 1);
+            SymbolEntry entry;
+            entry.name = labelName;
+            entry.isGlobal = (!labelName.empty() && labelName[0] == '_');
+            entry.isExternal = false;
+
             // Assign address based on current section
             switch (instructions[i].section) {
             case Section::TEXT:
                 labels[labelName] = currentAddress;
+                entry.address = currentAddress;
                 break;
             case Section::DATA:
                 dataLabels[labelName] = dataAddress;
+                entry.address = dataAddress;
                 break;
             case Section::BSS:
                 bssLabels[labelName] = bssAddress;
+                entry.address = bssAddress;
                 break;
             }
+            symbolTable[labelName] = entry;
             instructions.erase(instructions.begin() + i);
             i--;
         } else if (instructions[i].mnemonic == ".data") {
@@ -573,8 +582,12 @@ void Assembler::findEntryPoint(const std::vector<Instruction> &instructions)
     throw std::runtime_error("No entry point (_start or start) found");
 }
 
-const std::unordered_map<std::string, uint64_t>& Assembler::getSymbols() const {
-    return labels;
+const std::unordered_map<std::string, SymbolEntry>& Assembler::getSymbols() const {
+    // This is a placeholder until the symbol table is properly populated.
+    // The plan is to populate symbolTable in resolveLabels.
+    // For now, this will likely return an empty map, which will be handled
+    // in the next steps.
+    return symbolTable;
 }
 
 const std::vector<uint8_t>& Assembler::getMachineCode() const {
@@ -741,6 +754,12 @@ void Assembler::processDataSection(std::vector<Instruction> &instructions)
                     // Store in data section
                     uint64_t address = static_cast<uint64_t>(dataSectionBase) + static_cast<uint64_t>(dataSection.size());
                     dataLabels[label] = address;
+                    SymbolEntry entry;
+                    entry.name = label;
+                    entry.address = address;
+                    entry.isGlobal = (!label.empty() && label[0] == '_');
+                    entry.isExternal = false;
+                    symbolTable[label] = entry;
                     for (char c : processedStr) {
                         dataSection.push_back(static_cast<uint8_t>(c));
                     }
@@ -751,6 +770,12 @@ void Assembler::processDataSection(std::vector<Instruction> &instructions)
                     // Store length in symbol table (excluding null terminator)
                     std::string lenLabel = label + "_len";
                     dataLabels[lenLabel] = processedStr.length();
+                    SymbolEntry len_entry;
+                    len_entry.name = lenLabel;
+                    len_entry.address = processedStr.length(); // This is a value, not an address.
+                    len_entry.isGlobal = (!lenLabel.empty() && lenLabel[0] == '_');
+                    len_entry.isExternal = false;
+                    symbolTable[lenLabel] = len_entry;
 
                     std::cout << "  Created data at 0x" << std::hex
                               << address << std::dec

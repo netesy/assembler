@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <memory>
 #include <stdexcept>
+#include "assembler.hh" // For SymbolEntry
 
 // Forward declarations
 struct ElfSection;
@@ -31,13 +32,9 @@ public:
                        uint32_t type, const std::string& symbol, int64_t addend);
 
     // Generation methods
-    bool generateExecutable(const std::string& outputFile,
-                            const std::vector<uint8_t>& code,
-                            const std::unordered_map<std::string, uint64_t>& symbols = {});
-
     bool generateElf(const std::vector<uint8_t> &textSection,
                      const std::string &outputFile,
-                     const std::unordered_map<std::string, uint64_t> &symbols,
+                     const std::unordered_map<std::string, SymbolEntry> &symbols,
                      const std::vector<uint8_t> &dataSection,
                      uint64_t entryPoint);
 

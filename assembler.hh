@@ -48,7 +48,7 @@ public:
 
     bool assemble(const std::string &inputFile, const std::string &outputFile);
 
-    const std::unordered_map<std::string, uint64_t> &getSymbols() const;
+    const std::unordered_map<std::string, SymbolEntry> &getSymbols() const;
     const std::vector<uint8_t> &getMachineCode() const;
     const std::vector<uint8_t> &getTextSection() const;
     const std::vector<uint8_t> &getDataSection() const;
