@@ -1,94 +1,79 @@
 #include "assembler.hh"
 #include "elf.hh"
-#include "pe.hh"
 #include <filesystem>
 #include <iostream>
 
 using namespace std;
 
-std::string getExecutableName(const std::string& inputFile) {
-    std::filesystem::path path(inputFile);
-    return path.stem().string();  // Get filename without extension
-}
-
 int main(int argc, char* argv[]) {
-    // if (argc != 3) {
-    //     std::cerr << "Usage: " << argv[0] << " <input.asm> <output.bin>\n";
-    //     return 1;
-    // }
     std::string asmCode = R"(
-.data
-message "Hello, World!\n"   # String with automatic length
-buffer 100                  # 100 byte buffer
+.section .data
+    counter: .quad 0
 
-.text
+.section .text
+.global _start
+.global check_value
+
+; This function checks a value passed on the stack.
+; On entry, [rsp] holds the return address, and [rsp+8] holds the argument.
+check_value:
+    mov rbx, [rsp+8]    ; Load argument from the stack into rbx
+    cmp rbx, 123
+    je .success
+
+.failure:
+    mov rax, 99         ; Return 99 on failure
+    ret
+
+.success:
+    mov rax, 42         ; Return 42 on success
+    ret
+
 _start:
-    MOV R0, 1              # stdout
-    MOV R1, message        # string address
-    MOV R2, [message_len]  # length is automatically available
-    MOV R3, 1              # sys_write
+    ; Test brk syscall
+    mov rax, 12
+    mov rdi, 0
+    syscall
 
-        MOV R0, 0              # exit code 0
-    MOV R3, 60             # syscall number (sys_exit)
+    ; Test stack, call, and conditional jumps.
+    mov rax, 123
+    push rax
+    call check_value
 
+    add rsp, 8          ; Clean up stack after call
+
+    ; The result from check_value is in rax. Use it as the exit code.
+    mov rdi, rax        ; Expected exit code: 42
+    mov rax, 60
+    syscall
 )";
 
-    std::string inputFile = asmCode; // argv[1];
     std::string outputFile = "sample-exec";
 
-    // if (argc == 3) {
-    //     outputFile = argv[2];
-    // } else {
-    //     // Generate output name from input file
-    //     outputFile = getExecutableName(inputFile);
-    // }
     Assembler assembler;
-    ElfGenerator elfGen(true, 0x400000); // 64-bit, base address at 0x400000;
-    PEGenerator peGen(true);  // false = 32-bit
+    ElfGenerator elfGen(true, 0x400000);
 
-    if (!assembler.assemble(inputFile, outputFile + ".o")) {
+    if (!assembler.assemble(asmCode, outputFile)) {
         std::cerr << "Assembly failed\n";
         return 1;
     }
 
-   // elfGen.setEntryPoint(assembler.getEntryPoint());
     assembler.printDebugInfo();
-    // Get the machine code and symbols from the assembler
-    const std::vector<uint8_t>& machineCode = assembler.getMachineCode();
-    const std::unordered_map<std::string, uint64_t>& symbols = assembler.getSymbols();
 
-     std::cout << "Entry Point: " <<  assembler.getEntryPoint() << std::endl;
-    // Add imports
-    peGen.addImport("KERNEL32.dll", {"ExitProcess"});
+    const auto& symbols = assembler.getSymbols();
 
-    // Generate the final ELF executable using assembler's sections
     if (!elfGen.generateElf(
             assembler.getTextSection(),
             outputFile + ".elf",
-            assembler.getSymbols(),
+            symbols,
             assembler.getDataSection(),
-            0x400000)) {
+            assembler.getEntryPoint(),
+            0x600000)) {
         std::cerr << "ELF generation failed: " << elfGen.getLastError() << std::endl;
         return 1;
     }
 
-    peGen.setSubsystem(IMAGE_SUBSYSTEM_WINDOWS_CUI);
+    std::cout << "ELF executable generated successfully: " << outputFile << ".elf\n";
 
-    // Generate the executable
-    if (peGen.generateExecutable(outputFile + ".exe", machineCode)) {
-        std::cout << "Pe Executable generated successfully" << std::endl;
-    } else {
-        std::cerr << "Error: " << peGen.getLastError() << std::endl;
-    }
-
-   // set executable permissions
-    // std::filesystem::permissions(outputFile,
-    //                              std::filesystem::perms::owner_exec |
-    //                                  std::filesystem::perms::owner_read |
-    //                                  std::filesystem::perms::owner_write,
-    //                              std::filesystem::perm_options::add);
-
-    std::cout << "ELF executable generated successfully: " << argv[2] << "\n";
     return 0;
 }
-
