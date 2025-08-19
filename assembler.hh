@@ -22,10 +22,13 @@ struct Instruction {
     std::vector<std::string> operands;
     Section section = Section::TEXT;
 
-    // New members for the x86-64 assembler
     bool is_label = false;
     std::string label;
     std::string data_str;
+
+    // Members for two-pass assembly
+    uint64_t address = 0;
+    uint64_t size = 0;
 };
 
 struct SymbolEntry
@@ -63,9 +66,10 @@ public:
 
 private:
     std::vector<Instruction> parse(const std::string& code);
-    void first_pass(const std::vector<Instruction>& instructions);
+    void first_pass(std::vector<Instruction>& instructions);
     void second_pass(const std::vector<Instruction>& instructions);
     void encode_x86_64(const Instruction& instr);
+    uint64_t get_instruction_size(const Instruction& instr);
 
     Section currentSection;
     uint64_t textSectionBase;

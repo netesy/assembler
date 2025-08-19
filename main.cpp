@@ -1,6 +1,5 @@
 #include "assembler.hh"
 #include "elf.hh"
-#include "pe.hh"
 #include <filesystem>
 #include <iostream>
 
@@ -9,26 +8,36 @@ using namespace std;
 int main(int argc, char* argv[]) {
     std::string asmCode = R"(
 .section .data
-    msg: .asciz "Hello, world!\n"
+    msg: .asciz "Hello from a function!\n"
 
 .section .text
 .global _start
-_start:
-    ; Simple arithmetic example
-    mov r8, 10
-    add r8, 5       ; r8 is now 15
-    sub r8, 1       ; r8 is now 14
+.global print_message
 
-    ; sys_write call
-    mov rax, 1      ; syscall number for sys_write
-    mov rdi, 1      ; file descriptor 1 (stdout)
-    mov rsi, msg    ; address of the message
-    mov rdx, 14     ; length of the message
+print_message:
+    mov rax, 1
+    mov rdi, 1
+    mov rsi, msg
+    mov rdx, 24
+    syscall
+    ret
+
+_start:
+    call print_message
+
+    ; Test conditional jump
+    mov rax, 10
+    cmp rax, 10     ; This will set the Zero Flag
+    jne exit_error  ; This jump should NOT be taken
+
+    ; Normal exit
+    mov rax, 60
+    mov rdi, 0      ; Exit code 0
     syscall
 
-    ; sys_exit call
-    mov rax, 60     ; syscall number for sys_exit
-    mov rdi, 0      ; exit code 0
+exit_error:
+    mov rax, 60
+    mov rdi, 1      ; Exit code 1
     syscall
 )";
 
@@ -54,22 +63,12 @@ _start:
             symbols,
             assembler.getDataSection(),
             assembler.getEntryPoint(),
-            0x600000)) { // Pass the data base address
+            0x600000)) {
         std::cerr << "ELF generation failed: " << elfGen.getLastError() << std::endl;
         return 1;
     }
 
     std::cout << "ELF executable generated successfully: " << outputFile << ".elf\n";
-
-    // PE Generation is not the focus of this task and will likely fail with the new assembler
-    // PEGenerator peGen(true);
-    // peGen.addImport("KERNEL32.dll", {"ExitProcess"});
-    // peGen.setSubsystem(IMAGE_SUBSYSTEM_WINDOWS_CUI);
-    // if (peGen.generateExecutable(outputFile + ".exe", assembler.getMachineCode(), symbols)) {
-    //     std::cout << "PE Executable generated successfully" << std::endl;
-    // } else {
-    //     std::cerr << "Error: " << peGen.getLastError() << std::endl;
-    // }
 
     return 0;
 }
