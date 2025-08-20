@@ -207,16 +207,9 @@ public:
         uint32_t rawDataSize;
     };
 
-    struct Import {
-        std::string moduleName;
-        std::vector<std::string> functionNames;
-    };
-
     bool generateExecutable(const std::string& outputFile,
-                            const std::vector<uint8_t>& code,
                             const std::unordered_map<std::string, SymbolEntry>& symbols) {
         try {
-            setupDefaultSections(code);
             setupImports();
             buildSymbolTable(symbols);
             layoutSections();
@@ -251,11 +244,8 @@ public:
         sections_.push_back(std::move(section));
     }
 
-    void addImport(const std::string& moduleName, const std::vector<std::string>& functionNames) {
-        Import import;
-        import.moduleName = moduleName;
-        import.functionNames = functionNames;
-        imports_.push_back(std::move(import));
+    void addImport(const std::string& moduleName, const std::string& functionName) {
+        imports_[moduleName].push_back(functionName);
     }
 
     void setBaseAddress(uint64_t addr) { baseAddress_ = addr; }
@@ -277,7 +267,7 @@ private:
     std::string lastError_;
 
     std::vector<Section> sections_;
-    std::vector<Import> imports_;
+    std::unordered_map<std::string, std::vector<std::string>> imports_;
     uint32_t importDirectoryRVA_ = 0;
     std::vector<COFFSymbol> coffSymbols_;
     std::vector<char> stringTable_;
@@ -326,9 +316,9 @@ private:
         if (imports_.empty()) return;
 
         Section* rdata = findSection(".rdata");
-        if (!rdata) { // Should not happen with setupDefaultSections
-            lastError_ = ".rdata section not found for imports.";
-            throw std::runtime_error(lastError_);
+        if (!rdata) {
+            addSection(".rdata", {}, IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ);
+            rdata = findSection(".rdata");
         }
 
         // The import directory will be placed at the start of .rdata
@@ -338,84 +328,115 @@ private:
         rdata->virtualSize = rdata->data.size();
     }
 
+    // A helper to write values to a vector<uint8_t>
+    template<typename T>
+    void write_to_vector(std::vector<uint8_t>& vec, size_t offset, T value) {
+        if (offset + sizeof(T) > vec.size()) {
+            vec.resize(offset + sizeof(T));
+        }
+        memcpy(vec.data() + offset, &value, sizeof(T));
+    }
+
     uint32_t calculateImportDirectorySize() {
+        if (imports_.empty()) return 0;
+
         uint32_t size = (imports_.size() + 1) * sizeof(ImportDirectoryTable);
-        for (const auto& import : imports_) {
-            size += import.moduleName.size() + 1;
-            // ILT and IAT
-            size += (import.functionNames.size() + 1) * (is64Bit_ ? sizeof(uint64_t) : sizeof(uint32_t));
-            size += (import.functionNames.size() + 1) * (is64Bit_ ? sizeof(uint64_t) : sizeof(uint32_t));
-            // Hint/Name table
-            for (const auto& funcName : import.functionNames) {
-                size += sizeof(uint16_t) + funcName.size() + 1;
-                 if ((funcName.size() + 1) % 2 != 0) size++; // Align to WORD
+
+        uint32_t thunk_size = is64Bit_ ? sizeof(uint64_t) : sizeof(uint32_t);
+
+        uint32_t lookup_and_address_table_size = 0;
+        uint32_t hint_name_table_size = 0;
+
+        for (const auto& pair : imports_) {
+            lookup_and_address_table_size += (pair.second.size() + 1) * thunk_size; // For ILT
+            lookup_and_address_table_size += (pair.second.size() + 1) * thunk_size; // For IAT
+
+            hint_name_table_size += pair.first.size() + 1; // Module name
+            for (const auto& funcName : pair.second) {
+                size_t hint_name_size = sizeof(uint16_t) + funcName.size() + 1;
+                if (hint_name_size % 2 != 0) hint_name_size++;
+                hint_name_table_size += hint_name_size;
             }
         }
-        return size;
+        return size + lookup_and_address_table_size + hint_name_table_size;
     }
 
     std::vector<uint8_t> createImportDirectory() {
-        std::vector<uint8_t> data;
+        if (imports_.empty()) return {};
 
-        // Pointers within the data block
-        uint32_t idtSize = (imports_.size() + 1) * sizeof(ImportDirectoryTable);
-        uint32_t currentOffset = idtSize;
+        // Layout:
+        // 1. Import Directory Table (IDT)
+        // 2. Import Lookup Tables (ILTs)
+        // 3. Import Address Tables (IATs) - A copy of ILTs initially
+        // 4. Hint/Name data (function names and module names)
 
-        // Placeholder for IDTs
-        data.resize(idtSize);
+        uint32_t thunk_size = is64Bit_ ? sizeof(uint64_t) : sizeof(uint32_t);
 
-        uint32_t lookupTableRVA = importDirectoryRVA_ + currentOffset;
+        // Calculate offsets
+        uint32_t idt_size = (imports_.size() + 1) * sizeof(ImportDirectoryTable);
 
-        for(size_t i = 0; i < imports_.size(); ++i) {
-            auto& imp = imports_[i];
+        uint32_t ilts_base_offset = idt_size;
+        uint32_t iats_base_offset = 0;
+        uint32_t names_base_offset = 0;
 
-            // Write lookup table for this module
-            uint32_t currentLookupRVA = lookupTableRVA;
-            std::vector<uint8_t> lookupTable;
-            std::vector<uint8_t> hintNameTable;
+        uint32_t total_ilt_size = 0;
+        for (const auto& pair : imports_) {
+            total_ilt_size += (pair.second.size() + 1) * thunk_size;
+        }
+        iats_base_offset = ilts_base_offset + total_ilt_size;
+        names_base_offset = iats_base_offset + total_ilt_size;
 
-            for(const auto& funcName : imp.functionNames) {
-                 uint32_t hintNameRVA = importDirectoryRVA_ + currentOffset + lookupTable.size() + (imp.functionNames.size() + 1) * (is64Bit_ ? 8:4) + hintNameTable.size();
-                if (is64Bit_) {
-                    uint64_t rva = hintNameRVA;
-                    for(int j=0; j<8; ++j) lookupTable.push_back((rva >> (j*8)) & 0xFF);
+        uint32_t total_size = calculateImportDirectorySize();
+        std::vector<uint8_t> data(total_size, 0);
+
+        uint32_t idt_offset = 0;
+        uint32_t ilt_offset = ilts_base_offset;
+        uint32_t iat_offset = iats_base_offset;
+        uint32_t name_offset = names_base_offset;
+
+        for (const auto& pair : imports_) {
+            const std::string& moduleName = pair.first;
+            const std::vector<std::string>& functionNames = pair.second;
+
+            uint32_t current_ilt_start_offset = ilt_offset;
+
+            // --- Fill ILT and prepare Hint/Name data ---
+            for (const auto& funcName : functionNames) {
+                uint32_t hint_name_rva = importDirectoryRVA_ + name_offset;
+
+                if (is64Bit_) write_to_vector<uint64_t>(data, ilt_offset, hint_name_rva);
+                else write_to_vector<uint32_t>(data, ilt_offset, hint_name_rva);
+                ilt_offset += thunk_size;
+
+                // Write Hint/Name data
+                write_to_vector<uint16_t>(data, name_offset, 0); // Hint
+                memcpy(data.data() + name_offset + 2, funcName.c_str(), funcName.size() + 1);
+                size_t hint_name_size = 2 + funcName.size() + 1;
+                if (hint_name_size % 2 != 0) {
+                    name_offset += hint_name_size + 1;
                 } else {
-                    uint32_t rva = hintNameRVA;
-                    for(int j=0; j<4; ++j) lookupTable.push_back((rva >> (j*8)) & 0xFF);
+                    name_offset += hint_name_size;
                 }
-
-                hintNameTable.push_back(0); hintNameTable.push_back(0); // Hint
-                for(char c : funcName) hintNameTable.push_back(c);
-                hintNameTable.push_back(0);
-                if(hintNameTable.size() % 2 != 0) hintNameTable.push_back(0); // Align
             }
-            // Null terminator for lookup table
-            for(int j=0; j < (is64Bit_ ? 8:4); ++j) lookupTable.push_back(0);
+            ilt_offset += thunk_size; // Null terminator for ILT
+
+            // --- Fill IDT entry ---
+            ImportDirectoryTable idt = {};
+            idt.ImportLookupTableRVA = importDirectoryRVA_ + current_ilt_start_offset;
+            idt.ImportAddressTableRVA = importDirectoryRVA_ + iat_offset;
+            idt.NameRVA = importDirectoryRVA_ + name_offset;
+            memcpy(data.data() + idt_offset, &idt, sizeof(idt));
+            idt_offset += sizeof(idt);
 
             // Write module name
-            uint32_t moduleNameRVA = importDirectoryRVA_ + currentOffset + lookupTable.size() * 2 + hintNameTable.size();
-            std::vector<uint8_t> moduleNameData;
-            for(char c : imp.moduleName) moduleNameData.push_back(c);
-            moduleNameData.push_back(0);
+            memcpy(data.data() + name_offset, moduleName.c_str(), moduleName.size() + 1);
+            name_offset += moduleName.size() + 1;
 
-            // Fill in the main IDT entry
-            ImportDirectoryTable idt = {};
-            idt.ImportLookupTableRVA = currentLookupRVA;
-            idt.ImportAddressTableRVA = currentLookupRVA + lookupTable.size(); // IAT follows ILT
-            idt.NameRVA = moduleNameRVA;
-            memcpy(data.data() + i * sizeof(idt), &idt, sizeof(idt));
-
-            // Append all the data blocks
-            uint32_t originalSize = data.size();
-            data.resize(originalSize + lookupTable.size() * 2 + hintNameTable.size() + moduleNameData.size());
-            memcpy(data.data() + originalSize, lookupTable.data(), lookupTable.size());
-            memcpy(data.data() + originalSize + lookupTable.size(), lookupTable.data(), lookupTable.size()); // IAT = ILT
-            memcpy(data.data() + originalSize + lookupTable.size() * 2, hintNameTable.data(), hintNameTable.size());
-            memcpy(data.data() + originalSize + lookupTable.size() * 2 + hintNameTable.size(), moduleNameData.data(), moduleNameData.size());
-
-            currentOffset += lookupTable.size() * 2 + hintNameTable.size() + moduleNameData.size();
-            lookupTableRVA += lookupTable.size() * 2 + hintNameTable.size() + moduleNameData.size();
+            // --- Copy ILT to IAT ---
+            memcpy(data.data() + iat_offset, data.data() + current_ilt_start_offset, (functionNames.size() + 1) * thunk_size);
+            iat_offset += (functionNames.size() + 1) * thunk_size;
         }
+
         return data;
     }
 
@@ -568,9 +589,8 @@ PEGenerator::PEGenerator(bool is64Bit, uint64_t baseAddr)
 PEGenerator::~PEGenerator() = default;
 
 bool PEGenerator::generateExecutable(const std::string& outputFile,
-                                     const std::vector<uint8_t>& code,
                                      const std::unordered_map<std::string, SymbolEntry>& symbols) {
-    return pImpl_->generateExecutable(outputFile, code, symbols);
+    return pImpl_->generateExecutable(outputFile, symbols);
 }
 
 void PEGenerator::addSection(const std::string& name, const std::vector<uint8_t>& data,
@@ -578,9 +598,8 @@ void PEGenerator::addSection(const std::string& name, const std::vector<uint8_t>
     pImpl_->addSection(name, data, characteristics);
 }
 
-void PEGenerator::addImport(const std::string& moduleName,
-                            const std::vector<std::string>& functionNames) {
-    pImpl_->addImport(moduleName, functionNames);
+void PEGenerator::addImport(const std::string& moduleName, const std::string& functionName) {
+    pImpl_->addImport(moduleName, functionName);
 }
 
 void PEGenerator::setBaseAddress(uint64_t addr) { pImpl_->setBaseAddress(addr); }
