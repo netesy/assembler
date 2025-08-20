@@ -48,18 +48,19 @@ static const std::set<std::string> sse_instructions = {
     "cmpss", "cmpsd", "cmpps", "cmppd", "ucomiss", "ucomisd"
 };
 
-Assembler::Assembler(uint64_t textBase, uint64_t dataBase)
+Assembler::Assembler(const std::string& target_format, uint64_t textBase, uint64_t dataBase)
     : currentSection(Section::TEXT), textSectionBase(textBase), dataSectionBase(dataBase),
-    bssSectionBase(dataBase + 0x1000), rodataSectionBase(dataBase + 0x2000), entryPoint(0) {
+    bssSectionBase(dataBase + 0x1000), rodataSectionBase(dataBase + 0x2000), entryPoint(0), target_format_(target_format) {
     currentSectionInfo = {"", Section::TEXT, "", ""};
     includePaths.push_back("."); // Default include path
 }
 
 bool Assembler::assemble(const std::string &source, const std::string &outputFile) {
     try {
-        auto preprocessed = preprocess(source);
-        first_pass(preprocessed);
-        second_pass(preprocessed);
+        auto instructions = preprocess(source);
+        translate_syscalls_to_winapi(instructions);
+        first_pass(instructions);
+        second_pass(instructions);
         return true;
     } catch (const std::exception& e) {
         std::cerr << "Assembly Error: " << e.what() << std::endl;
@@ -1342,8 +1343,76 @@ const std::unordered_map<std::string, std::vector<uint8_t>>& Assembler::getCusto
     return customSections;
 }
 
+void Assembler::add_winapi_import(const std::string& dll, const std::string& function) {
+    for (const auto& imp : winapi_imports) {
+        if (imp.dll == dll && imp.function == function) {
+            return;
+        }
+    }
+    winapi_imports.push_back({dll, function});
+    symbolTable[function] = { function, 0, 0, SymbolBinding::GLOBAL, SymbolType::FUNCTION, SymbolVisibility::DEFAULT, Section::NONE, false };
+}
+
+void Assembler::translate_syscalls_to_winapi(std::vector<Instruction>& instructions) {
+    if (target_format_ != "pe") {
+        return;
+    }
+
+    for (size_t i = 0; i < instructions.size(); ++i) {
+        if (instructions[i].mnemonic == "syscall") {
+            // Found a syscall, scan backwards to find the syscall number in rax
+            long syscall_num = -1;
+            int rax_mov_index = -1;
+            for (int j = i - 1; j >= 0; j--) {
+                if (instructions[j].mnemonic == "mov" && instructions[j].operands.size() == 2 &&
+                    instructions[j].operands[0].value == "rax" && instructions[j].operands[1].type == OperandType::IMMEDIATE) {
+                    syscall_num = std::stoll(instructions[j].operands[1].value);
+                    rax_mov_index = j;
+                    break;
+                }
+                if (instructions[j].mnemonic == "syscall" || instructions[j].is_label) {
+                    break;
+                }
+            }
+
+            if (syscall_num != -1) {
+                if (syscall_num == 60) { // sys_exit
+                    std::string exit_code = "0";
+
+                    // Look for 'mov rdi, <exit_code>'
+                    for (int j = i - 1; j > rax_mov_index; j--) {
+                        if (instructions[j].mnemonic == "mov" && instructions[j].operands.size() == 2 &&
+                            instructions[j].operands[0].value == "rdi" && instructions[j].operands[1].type == OperandType::IMMEDIATE) {
+                            exit_code = instructions[j].operands[1].value;
+                            instructions.erase(instructions.begin() + j);
+                            i--;
+                            break;
+                        }
+                    }
+
+                    instructions[rax_mov_index].operands[0].value = "ecx";
+                    instructions[rax_mov_index].operands[1].value = exit_code;
+
+                    instructions[i].mnemonic = "call";
+                    instructions[i].operands.clear();
+                    instructions[i].operands.push_back({OperandType::LABEL, "ExitProcess"});
+
+                    add_winapi_import("kernel32.dll", "ExitProcess");
+
+                } else if (syscall_num == 1) { // sys_write
+                    // For now, let's just acknowledge and not translate to avoid crashes
+                }
+            }
+        }
+    }
+}
+
 uint64_t Assembler::getEntryPoint() const {
     return entryPoint;
+}
+
+const std::vector<WinApiImport>& Assembler::getWinApiImports() const {
+    return winapi_imports;
 }
 
 void Assembler::printDebugInfo() const {

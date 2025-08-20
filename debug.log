@@ -1,0 +1,25 @@
+
+==== ASSEMBLER DEBUG INFORMATION ====
+
+SYMBOLS:
+  _start: 0x400000 (binding: LOCAL, type: FUNC, defined: 1)
+  ExitProcess: 0x0 (binding: GLOBAL, type: FUNC, defined: 0)
+
+ENTRY POINT: 0x400000
+
+SECTION SIZES:
+  .text: 12 bytes
+  .data: 0 bytes
+  .bss: 0 bytes
+  .rodata: 0 bytes
+
+.text hexdump:
+48 c7 c1 00 00 00 00 e8 00 00 00 00
+
+MACROS DEFINED:
+
+DEFINES:
+
+==== END DEBUG INFORMATION ====
+
+File generated successfully: test.exe

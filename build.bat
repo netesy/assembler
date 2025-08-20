@@ -45,4 +45,25 @@ echo.
 echo To run the test: build\test_assembler.exe
 echo To run the assembler: build\assembler.exe
 echo.
+
+echo Running end-to-end test...
+echo Assembling test.asm into a PE executable...
+build\assembler.exe test.asm --format pe -o build\test.exe
+if %ERRORLEVEL% NEQ 0 (
+    echo Failed to assemble test.asm.
+    pause
+    exit /b 1
+)
+
+echo Running generated executable build\test.exe...
+build\test.exe
+if %ERRORLEVEL% NEQ 0 (
+    echo Generated executable failed to run or returned an error.
+    pause
+    exit /b 1
+)
+
+echo.
+echo End-to-end test completed successfully!
+echo.
 pause

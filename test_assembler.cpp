@@ -87,7 +87,7 @@ void test_stack_operations() {
 }
 
 void test_complex_stack_operations() {
-    Assembler assembler(0x400000, 0x601000);
+    Assembler assembler("elf", 0x400000, 0x601000);
     std::string code = R"(
     .section .data
     my_var: .quad 0x1122334455667788
