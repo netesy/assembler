@@ -5,26 +5,61 @@
 #include <map>
 #include <algorithm>
 #include <set>
+#include <fstream>
 
 static const std::map<std::string, uint8_t> register_map = {
     {"rax", 0}, {"rcx", 1}, {"rdx", 2}, {"rbx", 3},
     {"rsp", 4}, {"rbp", 5}, {"rsi", 6}, {"rdi", 7},
     {"r8", 8}, {"r9", 9}, {"r10", 10}, {"r11", 11},
     {"r12", 12}, {"r13", 13}, {"r14", 14}, {"r15", 15},
+    // 32-bit registers
+    {"eax", 0}, {"ecx", 1}, {"edx", 2}, {"ebx", 3},
+    {"esp", 4}, {"ebp", 5}, {"esi", 6}, {"edi", 7},
+    {"r8d", 8}, {"r9d", 9}, {"r10d", 10}, {"r11d", 11},
+    {"r12d", 12}, {"r13d", 13}, {"r14d", 14}, {"r15d", 15},
+    // 16-bit registers
+    {"ax", 0}, {"cx", 1}, {"dx", 2}, {"bx", 3},
+    {"sp", 4}, {"bp", 5}, {"si", 6}, {"di", 7},
+    {"r8w", 8}, {"r9w", 9}, {"r10w", 10}, {"r11w", 11},
+    {"r12w", 12}, {"r13w", 13}, {"r14w", 14}, {"r15w", 15},
+    // 8-bit registers
+    {"al", 0}, {"cl", 1}, {"dl", 2}, {"bl", 3},
+    {"ah", 4}, {"ch", 5}, {"dh", 6}, {"bh", 7},
+    {"r8b", 8}, {"r9b", 9}, {"r10b", 10}, {"r11b", 11},
+    {"r12b", 12}, {"r13b", 13}, {"r14b", 14}, {"r15b", 15}
+};
+
+static const std::map<std::string, uint8_t> xmm_register_map = {
+    {"xmm0", 0}, {"xmm1", 1}, {"xmm2", 2}, {"xmm3", 3},
+    {"xmm4", 4}, {"xmm5", 5}, {"xmm6", 6}, {"xmm7", 7},
+    {"xmm8", 8}, {"xmm9", 9}, {"xmm10", 10}, {"xmm11", 11},
+    {"xmm12", 12}, {"xmm13", 13}, {"xmm14", 14}, {"xmm15", 15}
 };
 
 static const std::set<std::string> lockable_instructions = {
-    "add", "adc", "and", "btc", "btr", "bts", "cmpxchg", "dec", "inc", "neg", "not", "or", "sbb", "sub", "xor", "xadd", "xchg"
+    "add", "adc", "and", "btc", "btr", "bts", "cmpxchg", "dec", "inc",
+    "neg", "not", "or", "sbb", "sub", "xor", "xadd", "xchg"
+};
+
+static const std::set<std::string> sse_instructions = {
+    "movss", "movsd", "movaps", "movapd", "movups", "movupd",
+    "addss", "addsd", "addps", "addpd", "subss", "subsd", "subps", "subpd",
+    "mulss", "mulsd", "mulps", "mulpd", "divss", "divsd", "divps", "divpd",
+    "cmpss", "cmpsd", "cmpps", "cmppd", "ucomiss", "ucomisd"
 };
 
 Assembler::Assembler(uint64_t textBase, uint64_t dataBase)
-    : currentSection(Section::TEXT), textSectionBase(textBase), dataSectionBase(dataBase), entryPoint(0) {}
+    : currentSection(Section::TEXT), textSectionBase(textBase), dataSectionBase(dataBase),
+    bssSectionBase(dataBase + 0x1000), rodataSectionBase(dataBase + 0x2000), entryPoint(0) {
+    currentSectionInfo = {"", Section::TEXT, "", ""};
+    includePaths.push_back("."); // Default include path
+}
 
 bool Assembler::assemble(const std::string &source, const std::string &outputFile) {
     try {
-        auto instructions = parse(source);
-        first_pass(instructions);
-        second_pass(instructions);
+        auto preprocessed = preprocess(source);
+        first_pass(preprocessed);
+        second_pass(preprocessed);
         return true;
     } catch (const std::exception& e) {
         std::cerr << "Assembly Error: " << e.what() << std::endl;
@@ -32,14 +67,291 @@ bool Assembler::assemble(const std::string &source, const std::string &outputFil
     }
 }
 
+bool Assembler::assembleFile(const std::string &inputFile, const std::string &outputFile) {
+    std::ifstream file(inputFile);
+    if (!file) {
+        std::cerr << "Cannot open input file: " << inputFile << std::endl;
+        return false;
+    }
+    std::string source((std::istreambuf_iterator<char>(file)),
+                       std::istreambuf_iterator<char>());
+    return assemble(source, outputFile);
+}
+
+std::vector<Instruction> Assembler::preprocess(const std::string& source) {
+    std::string processed = process_includes(source);
+    auto instructions = parse(processed);
+    return expand_macros(instructions);
+}
+
+std::string Assembler::process_includes(const std::string& source) {
+    std::istringstream stream(source);
+    std::ostringstream result;
+    std::string line;
+
+    while (std::getline(stream, line)) {
+        std::istringstream line_stream(line);
+        std::string token;
+        line_stream >> token;
+
+        if (token == "%include") {
+            std::string filename;
+            line_stream >> filename;
+            // Remove quotes if present
+            if (filename.front() == '"' && filename.back() == '"') {
+                filename = filename.substr(1, filename.length() - 2);
+            }
+
+            // Try to find file in include paths
+            bool found = false;
+            for (const auto& path : includePaths) {
+                std::string fullPath = path + "/" + filename;
+                std::ifstream incFile(fullPath);
+                if (incFile) {
+                    std::string incContent((std::istreambuf_iterator<char>(incFile)),
+                                           std::istreambuf_iterator<char>());
+                    result << process_includes(incContent) << "\n"; // Recursive include
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                throw std::runtime_error("Cannot find include file: " + filename);
+            }
+        } else {
+            result << line << "\n";
+        }
+    }
+    return result.str();
+}
+
+OperandSize Assembler::parse_size_prefix(const std::string& operand_str, std::string& cleaned_operand) {
+    cleaned_operand = operand_str;
+
+    if (operand_str.find("byte ptr") == 0) {
+        cleaned_operand = operand_str.substr(8);
+        // Trim leading whitespace
+        cleaned_operand.erase(0, cleaned_operand.find_first_not_of(" \t"));
+        return OperandSize::BYTE;
+    } else if (operand_str.find("word ptr") == 0) {
+        cleaned_operand = operand_str.substr(8);
+        cleaned_operand.erase(0, cleaned_operand.find_first_not_of(" \t"));
+        return OperandSize::WORD;
+    } else if (operand_str.find("dword ptr") == 0) {
+        cleaned_operand = operand_str.substr(9);
+        cleaned_operand.erase(0, cleaned_operand.find_first_not_of(" \t"));
+        return OperandSize::DWORD;
+    } else if (operand_str.find("qword ptr") == 0) {
+        cleaned_operand = operand_str.substr(9);
+        cleaned_operand.erase(0, cleaned_operand.find_first_not_of(" \t"));
+        return OperandSize::QWORD;
+    }
+
+    return OperandSize::INFERRED;
+}
+
 Operand Assembler::parse_operand(const std::string& op_str) {
     if (op_str.empty()) return {OperandType::NONE, ""};
-    if (op_str.front() == '[' && op_str.back() == ']') return {OperandType::MEMORY, op_str.substr(1, op_str.length() - 2)};
-    if (register_map.count(op_str)) return {OperandType::REGISTER, op_str};
+
+    std::string cleaned_operand;
+    OperandSize explicit_size = parse_size_prefix(op_str, cleaned_operand);
+    bool size_explicit = (explicit_size != OperandSize::INFERRED);
+
+    Operand operand;
+    operand.size = explicit_size;
+    operand.size_explicit = size_explicit;
+
+    if (cleaned_operand.front() == '[' && cleaned_operand.back() == ']') {
+        operand.type = OperandType::MEMORY;
+        operand.value = cleaned_operand.substr(1, cleaned_operand.length() - 2);
+        return operand;
+    }
+
+    if (register_map.count(cleaned_operand)) {
+        operand.type = OperandType::REGISTER;
+        operand.value = cleaned_operand;
+        // Infer size from register name if not explicit
+        if (!size_explicit) {
+            if (cleaned_operand.length() == 3 && (cleaned_operand[0] == 'e' ||
+                                                  (cleaned_operand[0] == 'r' && cleaned_operand[2] == 'd'))) {
+                operand.size = OperandSize::DWORD;
+            } else if (cleaned_operand.length() == 2 ||
+                       (cleaned_operand.length() == 3 && cleaned_operand[2] == 'w')) {
+                operand.size = OperandSize::WORD;
+            } else if (cleaned_operand.length() == 2 && (cleaned_operand[1] == 'l' ||
+                                                         cleaned_operand[1] == 'h') ||
+                       (cleaned_operand.length() == 3 && cleaned_operand[2] == 'b')) {
+                operand.size = OperandSize::BYTE;
+            } else {
+                operand.size = OperandSize::QWORD;
+            }
+        }
+        return operand;
+    }
+
+    if (xmm_register_map.count(cleaned_operand)) {
+        operand.type = OperandType::XMM_REGISTER;
+        operand.value = cleaned_operand;
+        operand.size = OperandSize::QWORD; // Default for XMM
+        return operand;
+    }
+
     try {
-        std::stoll(op_str);
-        return {OperandType::IMMEDIATE, op_str};
-    } catch (const std::invalid_argument&) { return {OperandType::LABEL, op_str}; }
+        std::stoll(cleaned_operand);
+        operand.type = OperandType::IMMEDIATE;
+        operand.value = cleaned_operand;
+        return operand;
+    } catch (const std::invalid_argument&) {
+        operand.type = OperandType::LABEL;
+        operand.value = cleaned_operand;
+        return operand;
+    }
+}
+
+void Assembler::define_macro(const std::string& line) {
+    std::istringstream iss(line);
+    std::string macro_keyword, macro_name;
+    iss >> macro_keyword >> macro_name; // Skip "%macro"
+
+    Macro macro;
+    macro.name = macro_name;
+
+    std::string param;
+    while (iss >> param) {
+        if (std::isdigit(param[0])) break; // Parameter count, ignore for simplicity
+        macro.parameters.push_back(param);
+    }
+
+    macros[macro_name] = macro;
+}
+
+bool Assembler::is_macro_call(const std::string& mnemonic) const {
+    return macros.count(mnemonic) > 0;
+}
+
+std::vector<std::string> Assembler::expand_macro_call(const std::string& macro_name,
+                                                      const std::vector<std::string>& args) {
+    if (!macros.count(macro_name)) return {};
+
+    const auto& macro = macros.at(macro_name);
+    std::vector<std::string> expanded;
+
+    for (const auto& line : macro.body) {
+        std::string expanded_line = line;
+        // Simple parameter substitution
+        for (size_t i = 0; i < macro.parameters.size() && i < args.size(); ++i) {
+            std::string param_placeholder = "%" + std::to_string(i + 1);
+            size_t pos = 0;
+            while ((pos = expanded_line.find(param_placeholder, pos)) != std::string::npos) {
+                expanded_line.replace(pos, param_placeholder.length(), args[i]);
+                pos += args[i].length();
+            }
+        }
+        expanded.push_back(expanded_line);
+    }
+
+    return expanded;
+}
+
+std::vector<Instruction> Assembler::expand_macros(const std::vector<Instruction>& instructions) {
+    std::vector<Instruction> expanded;
+
+    for (const auto& instr : instructions) {
+        if (is_macro_call(instr.mnemonic)) {
+            std::vector<std::string> args;
+            for (const auto& op : instr.operands) {
+                args.push_back(op.value);
+            }
+
+            auto macro_lines = expand_macro_call(instr.mnemonic, args);
+            for (const auto& line : macro_lines) {
+                auto macro_instrs = parse(line);
+                for (auto& macro_instr : macro_instrs) {
+                    macro_instr.from_macro = true;
+                    macro_instr.original_line = instr.original_line;
+                    expanded.push_back(macro_instr);
+                }
+            }
+        } else {
+            expanded.push_back(instr);
+        }
+    }
+
+    return expanded;
+}
+
+void Assembler::handle_data_directive(Instruction& instr, const std::string& directive,
+                                      const std::string& data_str) {
+    std::vector<uint8_t> data_bytes;
+
+    if (directive == ".byte" || directive == ".db") {
+        std::istringstream iss(data_str);
+        std::string value;
+        while (std::getline(iss, value, ',')) {
+            value.erase(0, value.find_first_not_of(" \t"));
+            value.erase(value.find_last_not_of(" \t") + 1);
+            uint8_t byte_val = static_cast<uint8_t>(std::stoll(value, nullptr, 0));
+            data_bytes.push_back(byte_val);
+        }
+    } else if (directive == ".word" || directive == ".dw") {
+        std::istringstream iss(data_str);
+        std::string value;
+        while (std::getline(iss, value, ',')) {
+            value.erase(0, value.find_first_not_of(" \t"));
+            value.erase(value.find_last_not_of(" \t") + 1);
+            uint16_t word_val = static_cast<uint16_t>(std::stoll(value, nullptr, 0));
+            data_bytes.push_back(word_val & 0xFF);
+            data_bytes.push_back((word_val >> 8) & 0xFF);
+        }
+    } else if (directive == ".dword" || directive == ".dd") {
+        std::istringstream iss(data_str);
+        std::string value;
+        while (std::getline(iss, value, ',')) {
+            value.erase(0, value.find_first_not_of(" \t"));
+            value.erase(value.find_last_not_of(" \t") + 1);
+            uint32_t dword_val = static_cast<uint32_t>(std::stoll(value, nullptr, 0));
+            for (int i = 0; i < 4; ++i) {
+                data_bytes.push_back((dword_val >> (i * 8)) & 0xFF);
+            }
+        }
+    } else if (directive == ".quad" || directive == ".dq") {
+        std::istringstream iss(data_str);
+        std::string value;
+        while (std::getline(iss, value, ',')) {
+            value.erase(0, value.find_first_not_of(" \t"));
+            value.erase(value.find_last_not_of(" \t") + 1);
+            uint64_t quad_val = static_cast<uint64_t>(std::stoll(value, nullptr, 0));
+            for (int i = 0; i < 8; ++i) {
+                data_bytes.push_back((quad_val >> (i * 8)) & 0xFF);
+            }
+        }
+    } else if (directive == ".asciz") {
+        std::string str_val = data_str;
+        if (str_val.front() == '"' && str_val.back() == '"') {
+            str_val = str_val.substr(1, str_val.length() - 2);
+        }
+        // Handle escape sequences
+        for (size_t i = 0; i < str_val.length(); ++i) {
+            if (str_val[i] == '\\' && i + 1 < str_val.length()) {
+                switch (str_val[i + 1]) {
+                case 'n': data_bytes.push_back('\n'); i++; break;
+                case 't': data_bytes.push_back('\t'); i++; break;
+                case 'r': data_bytes.push_back('\r'); i++; break;
+                case '\\': data_bytes.push_back('\\'); i++; break;
+                case '"': data_bytes.push_back('"'); i++; break;
+                default: data_bytes.push_back(str_val[i]); break;
+                }
+            } else {
+                data_bytes.push_back(str_val[i]);
+            }
+        }
+        data_bytes.push_back(0); // Null terminator
+    } else if (directive == ".space") {
+        size_t space_size = std::stoull(data_str);
+        data_bytes.resize(space_size, 0);
+    }
+
+    instr.data = data_bytes;
 }
 
 std::vector<Instruction> Assembler::parse(const std::string& source) {
@@ -47,38 +359,142 @@ std::vector<Instruction> Assembler::parse(const std::string& source) {
     std::istringstream stream(source);
     std::string line;
     Section current_section = Section::TEXT;
+    SectionInfo current_section_info = {"", Section::TEXT, "", ""};
+
+    bool in_macro = false;
+    std::string current_macro_name;
 
     while (std::getline(stream, line)) {
-        if (auto pos = line.find(';'); pos != std::string::npos) line = line.substr(0, pos);
+        std::string original_line = line;
+
+        // Remove comments
+        if (auto pos = line.find(';'); pos != std::string::npos) {
+            line = line.substr(0, pos);
+        }
 
         std::istringstream line_stream(line);
         std::string token;
         line_stream >> token;
         if (token.empty()) continue;
 
+        // Handle macro definition
+        if (token == "%macro") {
+            in_macro = true;
+            line_stream >> current_macro_name;
+            macros[current_macro_name] = Macro{current_macro_name, {}, {}};
+            continue;
+        } else if (token == "%endmacro") {
+            in_macro = false;
+            current_macro_name = "";
+            continue;
+        } else if (in_macro) {
+            macros[current_macro_name].body.push_back(line);
+            continue;
+        }
+
+        // Handle defines
+        if (token == "%define") {
+            std::string def_name, def_value;
+            line_stream >> def_name;
+            std::getline(line_stream, def_value);
+            def_value.erase(0, def_value.find_first_not_of(" \t"));
+            defines[def_name] = def_value;
+            continue;
+        }
+
+        // Handle labels
         if (token.back() == ':') {
-            instructions.push_back({"", {}, current_section, true, token.substr(0, token.size() - 1)});
+            Instruction instr;
+            instr.section = current_section;
+            instr.section_info = current_section_info;
+            instr.is_label = true;
+            instr.label = token.substr(0, token.size() - 1);
+            instr.original_line = original_line;
+            instructions.push_back(instr);
             continue;
         }
 
+        // Handle section directives
         if (token == ".section") {
-            line_stream >> token;
-            if (token == ".data") current_section = Section::DATA;
-            else if (token == ".text") current_section = Section::TEXT;
+            std::string section_name;
+            line_stream >> section_name;
+
+            SectionInfo section_info;
+            section_info.name = section_name;
+
+            // Parse attributes if present
+            std::string attr;
+            if (line_stream >> attr) {
+                if (attr.front() == '"' && attr.back() == '"') {
+                    section_info.attributes = attr.substr(1, attr.length() - 2);
+                } else {
+                    section_info.attributes = attr;
+                }
+            }
+
+            // Parse section type if present
+            if (line_stream >> attr) {
+                section_info.section_type = attr;
+            }
+
+            // Determine section type
+            if (section_name == ".text") {
+                section_info.type = Section::TEXT;
+            } else if (section_name == ".data") {
+                section_info.type = Section::DATA;
+            } else if (section_name == ".bss") {
+                section_info.type = Section::BSS;
+            } else if (section_name == ".rodata") {
+                section_info.type = Section::RODATA;
+            } else if (section_name == ".init") {
+                section_info.type = Section::INIT;
+            } else if (section_name == ".fini") {
+                section_info.type = Section::FINI;
+            } else {
+                section_info.type = Section::CUSTOM;
+            }
+
+            current_section = section_info.type;
+            current_section_info = section_info;
+            sectionInfoMap[section_name] = section_info;
             continue;
         }
 
-        if (token == ".global") { line_stream >> token; global_symbols.insert(token); continue; }
-
-        if (token == ".quad") {
-            if (instructions.empty() || !instructions.back().is_label) throw std::runtime_error(".quad without a label");
-            int64_t val; line_stream >> val;
-            instructions.back().data = val;
+        // Handle other directives
+        if (token == ".global") {
+            std::string symbol;
+            line_stream >> symbol;
+            global_symbols.insert(symbol);
             continue;
         }
 
+        if (token == ".align") {
+            // Handle alignment - simplified implementation
+            continue;
+        }
+
+        // Handle data directives
+        if (token == ".byte" || token == ".db" || token == ".word" || token == ".dw" ||
+            token == ".dword" || token == ".dd" || token == ".quad" || token == ".dq" ||
+            token == ".asciz" || token == ".space") {
+
+            if (instructions.empty() || !instructions.back().is_label) {
+                throw std::runtime_error("Data directive without a label: " + token);
+            }
+
+            std::string data_str;
+            std::getline(line_stream, data_str);
+            data_str.erase(0, data_str.find_first_not_of(" \t"));
+
+            handle_data_directive(instructions.back(), token, data_str);
+            continue;
+        }
+
+        // Handle instructions
         Instruction instr;
         instr.section = current_section;
+        instr.section_info = current_section_info;
+        instr.original_line = original_line;
 
         if (token == "lock") {
             instr.prefix = token;
@@ -92,9 +508,15 @@ std::vector<Instruction> Assembler::parse(const std::string& source) {
             std::stringstream ss(operand_str);
             std::string op;
             while(std::getline(ss, op, ',')) {
-                if (auto pos = op.find_first_not_of(" \t"); pos != std::string::npos) op = op.substr(pos);
-                if (auto pos = op.find_last_not_of(" \t"); pos != std::string::npos) op = op.substr(0, pos + 1);
-                if (!op.empty()) instr.operands.push_back(parse_operand(op));
+                if (auto pos = op.find_first_not_of(" \t"); pos != std::string::npos) {
+                    op = op.substr(pos);
+                }
+                if (auto pos = op.find_last_not_of(" \t"); pos != std::string::npos) {
+                    op = op.substr(0, pos + 1);
+                }
+                if (!op.empty()) {
+                    instr.operands.push_back(parse_operand(op));
+                }
             }
         }
         instructions.push_back(instr);
@@ -102,43 +524,139 @@ std::vector<Instruction> Assembler::parse(const std::string& source) {
     return instructions;
 }
 
+uint8_t Assembler::get_register_code(const std::string& reg) {
+    auto it = register_map.find(reg);
+    if (it != register_map.end()) {
+        return it->second;
+    }
+    throw std::runtime_error("Unknown register: " + reg);
+}
+
+uint8_t Assembler::get_xmm_register_code(const std::string& reg) {
+    auto it = xmm_register_map.find(reg);
+    if (it != xmm_register_map.end()) {
+        return it->second;
+    }
+    throw std::runtime_error("Unknown XMM register: " + reg);
+}
+
+void Assembler::switch_section(const SectionInfo& section_info) {
+    currentSection = section_info.type;
+    currentSectionInfo = section_info;
+    sectionInfoMap[section_info.name] = section_info;
+}
+
+uint64_t Assembler::get_section_base(Section section) const {
+    switch (section) {
+    case Section::TEXT: return textSectionBase;
+    case Section::DATA: return dataSectionBase;
+    case Section::BSS: return bssSectionBase;
+    case Section::RODATA: return rodataSectionBase;
+    default: return dataSectionBase; // Default for custom sections
+    }
+}
+
+std::vector<uint8_t>& Assembler::get_section_data(Section section) {
+    switch (section) {
+    case Section::TEXT: return textSection;
+    case Section::DATA: return dataSection;
+    case Section::BSS: return bssSection;
+    case Section::RODATA: return rodataSection;
+    default: throw std::runtime_error("Invalid section for data access");
+    }
+}
+
 uint64_t Assembler::get_instruction_size(const Instruction& instr) {
+    if (instr.is_label) return 0;
+
     uint64_t base_size = 0;
     const auto& m = instr.mnemonic;
+
+    // SSE instructions
+    if (sse_instructions.count(m)) {
+        if (m.find("ss") != std::string::npos || m.find("sd") != std::string::npos) {
+            // Scalar SSE - typically 4-5 bytes
+            base_size = 4;
+            if (instr.operands.size() == 2 && instr.operands[1].type == OperandType::MEMORY) {
+                base_size += 3; // Additional bytes for memory addressing
+            }
+        } else {
+            // Packed SSE - typically 3-4 bytes
+            base_size = 3;
+            if (instr.operands.size() == 2 && instr.operands[1].type == OperandType::MEMORY) {
+                base_size += 3; // Additional bytes for memory addressing
+            }
+        }
+        return base_size + (!instr.prefix.empty() ? 1 : 0);
+    }
 
     if (m == "ret") base_size = 1;
     else if (m == "syscall") base_size = 2;
     else if (m == "push") {
         if (instr.operands.empty()) return 0;
-        if (instr.operands[0].type == OperandType::REGISTER) base_size = (register_map.at(instr.operands[0].value) >= 8) ? 2 : 1;
-        else if (instr.operands[0].type == OperandType::MEMORY) base_size = 6;
-        else if (instr.operands[0].type == OperandType::IMMEDIATE) base_size = 5;
+        const auto& op = instr.operands[0];
+        if (op.type == OperandType::REGISTER) {
+            uint8_t reg_code = get_register_code(op.value);
+            base_size = (reg_code >= 8) ? 2 : 1;
+        } else if (op.type == OperandType::MEMORY) {
+            base_size = 6;
+        } else if (op.type == OperandType::IMMEDIATE) {
+            // Size depends on operand size
+            if (op.size == OperandSize::BYTE) base_size = 2;
+            else if (op.size == OperandSize::WORD) base_size = 4;
+            else base_size = 5; // 32-bit immediate
+        }
     }
     else if (m == "pop") {
         if (instr.operands.empty()) return 0;
-        if (instr.operands[0].type == OperandType::REGISTER) base_size = (register_map.at(instr.operands[0].value) >= 8) ? 2 : 1;
-        else if (instr.operands[0].type == OperandType::MEMORY) base_size = 6;
+        const auto& op = instr.operands[0];
+        if (op.type == OperandType::REGISTER) {
+            uint8_t reg_code = get_register_code(op.value);
+            base_size = (reg_code >= 8) ? 2 : 1;
+        } else if (op.type == OperandType::MEMORY) {
+            base_size = 6;
+        }
     }
     else if (m == "call" || m == "jmp") base_size = 5;
-    else if (m == "je" || m == "jne" || m == "jz" || m == "jnz" || m == "jl" || m == "jle" || m == "jg" || m == "jge") base_size = 6;
+    else if (m == "je" || m == "jne" || m == "jz" || m == "jnz" ||
+             m == "jl" || m == "jle" || m == "jg" || m == "jge") base_size = 6;
     else if (instr.operands.size() == 2) {
         const auto& op1 = instr.operands[0];
         const auto& op2 = instr.operands[1];
+
         if (m == "add" || m == "sub" || m == "mov" || m == "cmp") {
-            if (op1.type == OperandType::MEMORY && op2.type == OperandType::IMMEDIATE) base_size = 8;
-            else if (op1.type == OperandType::REGISTER && op2.type == OperandType::MEMORY) {
-                 if (op2.value.find("rsp") != std::string::npos) return 8; // SIB byte + disp
-                 return 7;
-            }
-            else if (op1.type == OperandType::MEMORY && op2.type == OperandType::REGISTER) base_size = 7;
-            else if (op1.type == OperandType::REGISTER && op2.type == OperandType::REGISTER) base_size = 3;
-            else if (op1.type == OperandType::REGISTER && op2.type == OperandType::IMMEDIATE) {
-                int64_t imm;
-                std::stringstream ss;
-                ss << std::hex << op2.value;
-                ss >> imm;
-                if (m == "mov") base_size = (imm >= -2147483648LL && imm <= 2147483647LL) ? 5 : 10; // mov r, imm32 vs imm64
-                else base_size = (imm >= -128 && imm <= 127) ? 4 : 7; // add/sub/cmp r, imm8 vs imm32
+            if (op1.type == OperandType::MEMORY && op2.type == OperandType::IMMEDIATE) {
+                base_size = 8;
+            } else if (op1.type == OperandType::REGISTER && op2.type == OperandType::MEMORY) {
+                if (op2.value.find("rsp") != std::string::npos) base_size = 8;
+                else base_size = 7;
+            } else if (op1.type == OperandType::MEMORY && op2.type == OperandType::REGISTER) {
+                base_size = 7;
+            } else if (op1.type == OperandType::REGISTER && op2.type == OperandType::REGISTER) {
+                // Size depends on operand size
+                if (op1.size == OperandSize::BYTE || op2.size == OperandSize::BYTE) {
+                    base_size = 3; // REX + opcode + ModR/M
+                } else if (op1.size == OperandSize::WORD || op2.size == OperandSize::WORD) {
+                    base_size = 4; // 66h prefix + REX + opcode + ModR/M
+                } else {
+                    base_size = 3; // REX + opcode + ModR/M
+                }
+            } else if (op1.type == OperandType::REGISTER && op2.type == OperandType::IMMEDIATE) {
+                int64_t imm = std::stoll(op2.value);
+                if (m == "mov") {
+                    if (op1.size == OperandSize::BYTE) base_size = 2;
+                    else if (op1.size == OperandSize::WORD) base_size = 4;
+                    else if (imm >= -2147483648LL && imm <= 2147483647LL) base_size = 5;
+                    else base_size = 10;
+                } else {
+                    if (op1.size == OperandSize::BYTE) {
+                        base_size = 3; // REX + opcode + ModR/M + imm8
+                    } else if (imm >= -128 && imm <= 127) {
+                        base_size = 4; // REX + opcode + ModR/M + imm8
+                    } else {
+                        base_size = 7; // REX + opcode + ModR/M + imm32
+                    }
+                }
             }
         }
     }
@@ -146,34 +664,165 @@ uint64_t Assembler::get_instruction_size(const Instruction& instr) {
 }
 
 void Assembler::first_pass(std::vector<Instruction>& instructions) {
-    uint64_t text_offset = 0, data_offset = 0;
+    std::map<Section, uint64_t> section_offsets;
+    section_offsets[Section::TEXT] = 0;
+    section_offsets[Section::DATA] = 0;
+    section_offsets[Section::BSS] = 0;
+    section_offsets[Section::RODATA] = 0;
+
     for (auto& instr : instructions) {
-        if (instr.section == Section::TEXT) {
-            instr.address = textSectionBase + text_offset;
-            if (instr.is_label) {
-                symbolTable[instr.label] = { instr.label, instr.address, global_symbols.count(instr.label) > 0, false };
-                if (instr.label == "_start") entryPoint = instr.address;
-            } else if (!instr.mnemonic.empty()) {
-                instr.size = get_instruction_size(instr);
-                text_offset += instr.size;
+        Section section = instr.section;
+        uint64_t& offset = section_offsets[section];
+        uint64_t base_addr = get_section_base(section);
+
+        instr.address = base_addr + offset;
+
+        if (instr.is_label) {
+            SymbolEntry entry;
+            entry.name = instr.label;
+            entry.address = instr.address;
+            entry.isGlobal = global_symbols.count(instr.label) > 0;
+            entry.isExternal = false;
+            entry.section = section;
+
+            // Determine symbol type based on section
+            if (section == Section::TEXT) {
+                entry.type = "function";
+            } else {
+                entry.type = "object";
             }
-        } else if (instr.section == Section::DATA) {
-            instr.address = dataSectionBase + data_offset;
-            if (instr.is_label) {
-                symbolTable[instr.label] = { instr.label, instr.address, global_symbols.count(instr.label) > 0, false };
-                if (std::holds_alternative<int64_t>(instr.data)) data_offset += 8;
+
+            symbolTable[instr.label] = entry;
+
+            if (instr.label == "_start") {
+                entryPoint = instr.address;
             }
+
+            // Handle data for labels
+            if (std::holds_alternative<std::vector<uint8_t>>(instr.data)) {
+                auto& data_bytes = std::get<std::vector<uint8_t>>(instr.data);
+                offset += data_bytes.size();
+            } else if (std::holds_alternative<int64_t>(instr.data)) {
+                offset += 8; // Legacy .quad support
+            }
+        } else if (!instr.mnemonic.empty()) {
+            instr.size = get_instruction_size(instr);
+            offset += instr.size;
+        }
+    }
+}
+
+void Assembler::encode_sse_instruction(const Instruction& instr) {
+    const auto& m = instr.mnemonic;
+
+    if (instr.operands.size() != 2) {
+        throw std::runtime_error("SSE instructions require exactly 2 operands");
+    }
+
+    const auto& dst = instr.operands[0];
+    const auto& src = instr.operands[1];
+
+    if (dst.type != OperandType::XMM_REGISTER) {
+        throw std::runtime_error("First operand must be XMM register for SSE instruction");
+    }
+
+    uint8_t dst_reg = get_xmm_register_code(dst.value);
+
+    // SSE instruction prefixes and opcodes
+    if (m == "movss") {
+        textSection.push_back(0xF3); // REP prefix for scalar single
+        textSection.push_back(0x0F);
+        if (src.type == OperandType::XMM_REGISTER) {
+            textSection.push_back(0x10); // MOVSS xmm, xmm
+            uint8_t src_reg = get_xmm_register_code(src.value);
+            textSection.push_back(0xC0 | (dst_reg << 3) | src_reg);
+        } else if (src.type == OperandType::MEMORY) {
+            textSection.push_back(0x10); // MOVSS xmm, m32
+            textSection.push_back((0b00 << 6) | (dst_reg << 3) | 0b101); // ModR/M
+            // Add displacement (simplified - assumes RIP-relative)
+            uint64_t target_addr = symbolTable.at(src.value).address;
+            int32_t rel_addr = target_addr - (instr.address + instr.size);
+            for (int i = 0; i < 4; ++i) {
+                textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+            }
+        }
+    } else if (m == "movsd") {
+        textSection.push_back(0xF2); // REPNE prefix for scalar double
+        textSection.push_back(0x0F);
+        if (src.type == OperandType::XMM_REGISTER) {
+            textSection.push_back(0x10); // MOVSD xmm, xmm
+            uint8_t src_reg = get_xmm_register_code(src.value);
+            textSection.push_back(0xC0 | (dst_reg << 3) | src_reg);
+        } else if (src.type == OperandType::MEMORY) {
+            textSection.push_back(0x10); // MOVSD xmm, m64
+            textSection.push_back((0b00 << 6) | (dst_reg << 3) | 0b101); // ModR/M
+            uint64_t target_addr = symbolTable.at(src.value).address;
+            int32_t rel_addr = target_addr - (instr.address + instr.size);
+            for (int i = 0; i < 4; ++i) {
+                textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+            }
+        }
+    } else if (m == "addss") {
+        textSection.push_back(0xF3);
+        textSection.push_back(0x0F);
+        textSection.push_back(0x58); // ADDSS
+        if (src.type == OperandType::XMM_REGISTER) {
+            uint8_t src_reg = get_xmm_register_code(src.value);
+            textSection.push_back(0xC0 | (dst_reg << 3) | src_reg);
+        } else {
+            throw std::runtime_error("ADDSS with memory operand not yet implemented");
+        }
+    } else if (m == "addsd") {
+        textSection.push_back(0xF2);
+        textSection.push_back(0x0F);
+        textSection.push_back(0x58); // ADDSD
+        if (src.type == OperandType::XMM_REGISTER) {
+            uint8_t src_reg = get_xmm_register_code(src.value);
+            textSection.push_back(0xC0 | (dst_reg << 3) | src_reg);
+        } else {
+            throw std::runtime_error("ADDSD with memory operand not yet implemented");
+        }
+    } else if (m == "mulss") {
+        textSection.push_back(0xF3);
+        textSection.push_back(0x0F);
+        textSection.push_back(0x59); // MULSS
+        if (src.type == OperandType::XMM_REGISTER) {
+            uint8_t src_reg = get_xmm_register_code(src.value);
+            textSection.push_back(0xC0 | (dst_reg << 3) | src_reg);
+        }
+    } else if (m == "mulsd") {
+        textSection.push_back(0xF2);
+        textSection.push_back(0x0F);
+        textSection.push_back(0x59); // MULSD
+        if (src.type == OperandType::XMM_REGISTER) {
+            uint8_t src_reg = get_xmm_register_code(src.value);
+            textSection.push_back(0xC0 | (dst_reg << 3) | src_reg);
         }
     }
 }
 
 void Assembler::second_pass(const std::vector<Instruction>& instructions) {
-    textSection.clear(); dataSection.clear();
+    // Clear all section data
+    textSection.clear();
+    dataSection.clear();
+    bssSection.clear();
+    rodataSection.clear();
+    customSections.clear();
+
     for (const auto& instr : instructions) {
         if (instr.is_label) {
-            if (std::holds_alternative<int64_t>(instr.data)) {
+            // Handle data for labels
+            if (std::holds_alternative<std::vector<uint8_t>>(instr.data)) {
+                auto& data_bytes = std::get<std::vector<uint8_t>>(instr.data);
+                auto& section_data = get_section_data(instr.section);
+                section_data.insert(section_data.end(), data_bytes.begin(), data_bytes.end());
+            } else if (std::holds_alternative<int64_t>(instr.data)) {
+                // Legacy .quad support
                 int64_t val = std::get<int64_t>(instr.data);
-                for(int i=0; i<8; ++i) dataSection.push_back((val >> (i*8)) & 0xFF);
+                auto& section_data = get_section_data(instr.section);
+                for(int i = 0; i < 8; ++i) {
+                    section_data.push_back((val >> (i*8)) & 0xFF);
+                }
             }
         } else if (instr.section == Section::TEXT && !instr.mnemonic.empty()) {
             encode_x86_64(instr);
@@ -182,59 +831,117 @@ void Assembler::second_pass(const std::vector<Instruction>& instructions) {
 }
 
 void Assembler::encode_x86_64(const Instruction& instr) {
+    // Handle prefix
     if (!instr.prefix.empty()) {
         if (instr.prefix == "lock") {
-            if (!lockable_instructions.count(instr.mnemonic)) throw std::runtime_error("Instruction '" + instr.mnemonic + "' cannot be locked");
-            if (instr.operands.empty() || instr.operands[0].type != OperandType::MEMORY) throw std::runtime_error("LOCK prefix requires a memory operand");
+            if (!lockable_instructions.count(instr.mnemonic)) {
+                throw std::runtime_error("Instruction '" + instr.mnemonic + "' cannot be locked");
+            }
+            if (instr.operands.empty() || instr.operands[0].type != OperandType::MEMORY) {
+                throw std::runtime_error("LOCK prefix requires a memory operand");
+            }
             textSection.push_back(0xF0);
         }
     }
+
     const auto& m = instr.mnemonic;
-    if (m == "syscall") { textSection.push_back(0x0F); textSection.push_back(0x05); return; }
-    if (m == "ret") { textSection.push_back(0xC3); return; }
+
+    // Handle SSE instructions
+    if (sse_instructions.count(m)) {
+        encode_sse_instruction(instr);
+        return;
+    }
+
+    // Handle basic instructions
+    if (m == "syscall") {
+        textSection.push_back(0x0F);
+        textSection.push_back(0x05);
+        return;
+    }
+
+    if (m == "ret") {
+        textSection.push_back(0xC3);
+        return;
+    }
+
     if (m == "push") {
-        if (instr.operands[0].type == OperandType::IMMEDIATE) {
-            textSection.push_back(0x68);
-            uint32_t imm;
-            std::stringstream ss;
-            ss << std::hex << instr.operands[0].value;
-            ss >> imm;
-            for(int i=0; i<4; ++i) textSection.push_back((imm >> (i*8)) & 0xFF);
-        } else if (instr.operands[0].type == OperandType::MEMORY) {
+        const auto& op = instr.operands[0];
+        if (op.type == OperandType::IMMEDIATE) {
+            int64_t imm = std::stoll(op.value);
+            if (op.size == OperandSize::BYTE || (imm >= -128 && imm <= 127)) {
+                textSection.push_back(0x6A); // PUSH imm8
+                textSection.push_back(static_cast<uint8_t>(imm));
+            } else {
+                textSection.push_back(0x68); // PUSH imm32
+                for(int i = 0; i < 4; ++i) {
+                    textSection.push_back((static_cast<uint32_t>(imm) >> (i*8)) & 0xFF);
+                }
+            }
+        } else if (op.type == OperandType::MEMORY) {
             textSection.push_back(0xFF);
             textSection.push_back(0x35);
-            uint64_t target_addr = symbolTable.at(instr.operands[0].value).address;
+            uint64_t target_addr = symbolTable.at(op.value).address;
             int32_t rel_addr = target_addr - (instr.address + instr.size);
-            for (int i = 0; i < 4; ++i) textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
-        }
-        else {
-            uint8_t reg_code = register_map.at(instr.operands[0].value);
-            if (reg_code >= 8) textSection.push_back(0x41);
+            for (int i = 0; i < 4; ++i) {
+                textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+            }
+        } else if (op.type == OperandType::REGISTER) {
+            uint8_t reg_code = get_register_code(op.value);
+
+            // Handle different register sizes
+            if (op.size == OperandSize::WORD) {
+                textSection.push_back(0x66); // Operand size override
+            }
+
+            if (reg_code >= 8) {
+                textSection.push_back(0x41); // REX.B
+            }
             textSection.push_back(0x50 + (reg_code & 7));
         }
         return;
     }
+
     if (m == "pop") {
-        if (instr.operands[0].type == OperandType::MEMORY) {
+        const auto& op = instr.operands[0];
+        if (op.type == OperandType::MEMORY) {
             textSection.push_back(0x8F);
             textSection.push_back(0x05);
-            uint64_t target_addr = symbolTable.at(instr.operands[0].value).address;
+            uint64_t target_addr = symbolTable.at(op.value).address;
             int32_t rel_addr = target_addr - (instr.address + instr.size);
-            for (int i = 0; i < 4; ++i) textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
-        } else {
-            uint8_t reg_code = register_map.at(instr.operands[0].value);
-            if (reg_code >= 8) textSection.push_back(0x41);
+            for (int i = 0; i < 4; ++i) {
+                textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+            }
+        } else if (op.type == OperandType::REGISTER) {
+            uint8_t reg_code = get_register_code(op.value);
+
+            if (op.size == OperandSize::WORD) {
+                textSection.push_back(0x66); // Operand size override
+            }
+
+            if (reg_code >= 8) {
+                textSection.push_back(0x41); // REX.B
+            }
             textSection.push_back(0x58 + (reg_code & 7));
         }
         return;
     }
-    if (m == "call" || m == "jmp" || m == "je" || m == "jne" || m == "jz" || m == "jnz" || m == "jl" || m == "jle" || m == "jg" || m == "jge") {
-        if (instr.operands.size() != 1 || instr.operands[0].type != OperandType::LABEL) throw std::runtime_error("Invalid operands for " + m);
+
+    // Handle control flow instructions
+    if (m == "call" || m == "jmp" || m == "je" || m == "jne" || m == "jz" || m == "jnz" ||
+        m == "jl" || m == "jle" || m == "jg" || m == "jge") {
+
+        if (instr.operands.size() != 1 || instr.operands[0].type != OperandType::LABEL) {
+            throw std::runtime_error("Invalid operands for " + m);
+        }
+
         uint64_t target_addr = symbolTable.at(instr.operands[0].value).address;
         int32_t rel_addr = target_addr - (instr.address + instr.size);
-        if (m == "call") textSection.push_back(0xE8);
-        else if (m == "jmp") textSection.push_back(0xE9);
-        else {
+
+        if (m == "call") {
+            textSection.push_back(0xE8);
+        } else if (m == "jmp") {
+            textSection.push_back(0xE9);
+        } else {
             textSection.push_back(0x0F);
             if (m == "je" || m == "jz") textSection.push_back(0x84);
             else if (m == "jne" || m == "jnz") textSection.push_back(0x85);
@@ -243,82 +950,112 @@ void Assembler::encode_x86_64(const Instruction& instr) {
             else if (m == "jg") textSection.push_back(0x8F);
             else if (m == "jge") textSection.push_back(0x8D);
         }
-        for (int i = 0; i < 4; ++i) textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+
+        for (int i = 0; i < 4; ++i) {
+            textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+        }
         return;
     }
-    if (instr.operands.size() != 2) throw std::runtime_error("Unsupported operands for " + m);
-    const auto& op1 = instr.operands[0];
-    const auto& op2 = instr.operands[1];
-    if (op1.type == OperandType::MEMORY && op2.type == OperandType::IMMEDIATE) {
-        uint8_t modrm_ext = (m == "add") ? 0 : (m == "sub") ? 5 : 7;
-        int64_t imm = std::stoll(op2.value);
-        textSection.push_back(0x48);
-        textSection.push_back((imm >= -128 && imm <= 127) ? 0x83 : 0x81);
-        textSection.push_back((0b00 << 6) | (modrm_ext << 3) | 0b101);
-        int32_t disp = symbolTable.at(op1.value).address - (instr.address + instr.size);
-        for(int i=0; i<4; ++i) textSection.push_back((disp >> (i*8)) & 0xFF);
-        if (imm >= -128 && imm <= 127) textSection.push_back(static_cast<uint8_t>(imm));
-        else for(int i=0; i<4; ++i) textSection.push_back((static_cast<uint32_t>(imm) >> (i*8)) & 0xFF);
-    } else if (op1.type == OperandType::REGISTER && op2.type == OperandType::MEMORY) {
-        uint8_t opcode = (m == "mov") ? 0x8B : (m == "add") ? 0x03 : 0x2B;
-        uint8_t reg_code = register_map.at(op1.value);
-        textSection.push_back(0x48 | ((reg_code >= 8) ? 4 : 0));
-        textSection.push_back(opcode);
-        if (op2.value.find("rsp") != std::string::npos) {
-             textSection.push_back((0b01 << 6) | ((reg_code & 7) << 3) | 0b100);
-             textSection.push_back(0x24);
-             textSection.push_back(8);
-        } else {
-            textSection.push_back((0b00 << 6) | ((reg_code & 7) << 3) | 0b101);
-            int32_t disp = symbolTable.at(op2.value).address - (instr.address + instr.size);
-            for(int i=0; i<4; ++i) textSection.push_back((disp >> (i*8)) & 0xFF);
-        }
-    } else if (op1.type == OperandType::REGISTER && op2.type == OperandType::IMMEDIATE) {
-        uint8_t reg_code = register_map.at(op1.value);
-        uint8_t modrm_ext = (m == "add") ? 0 : (m == "sub") ? 5 : (m == "cmp") ? 7 : 0;
-        int64_t imm;
-        std::stringstream ss;
-        ss << std::hex << op2.value;
-        ss >> imm;
-        uint8_t rex = 0x48 | ((reg_code >= 8) ? 1 : 0);
-        if (m == "mov") {
-            textSection.push_back(rex);
-            if (imm >= -2147483648LL && imm <= 2147483647LL) {
-                textSection.push_back(0xC7);
-                textSection.push_back(0xC0 | (reg_code & 7));
-                for(int i=0; i<4; ++i) textSection.push_back((static_cast<uint32_t>(imm) >> (i*8)) & 0xFF);
-            } else {
-                textSection.push_back(0xB8 + (reg_code & 7));
-                for(int i=0; i<8; ++i) textSection.push_back((imm >> (i*8)) & 0xFF);
-            }
-        } else {
-            textSection.push_back(rex);
-            textSection.push_back((imm >= -128 && imm <= 127) ? 0x83 : 0x81);
-            textSection.push_back(0xC0 | (modrm_ext << 3) | (reg_code & 7));
-            if (imm >= -128 && imm <= 127) textSection.push_back(static_cast<uint8_t>(imm));
-            else for(int i=0; i<4; ++i) textSection.push_back((static_cast<uint32_t>(imm) >> (i*8)) & 0xFF);
-        }
-    }
-}
 
-const std::unordered_map<std::string, SymbolEntry>& Assembler::getSymbols() const { return symbolTable; }
-const std::vector<uint8_t>& Assembler::getTextSection() const { return textSection; }
-const std::vector<uint8_t>& Assembler::getDataSection() const { return dataSection; }
-uint64_t Assembler::getEntryPoint() const { return entryPoint; }
-void Assembler::printDebugInfo() const {     std::cout << "\n==== ASSEMBLER DEBUG INFORMATION ====\n\n";
-    std::cout << "SYMBOLS:\n";
-    for(const auto& pair : symbolTable) {
-        std::cout << "  " << pair.first << ": 0x" << std::hex << pair.second.address << " (global: " << pair.second.isGlobal << ")\n";
-    }
-    std::cout << "\nENTRY POINT: 0x" << std::hex << entryPoint << std::dec << "\n";
-    std::cout << "\nSECTION SIZES:\n";
-    std::cout << "  .text: " << textSection.size() << " bytes\n";
-    std::cout << "  .data: " << dataSection.size() << " bytes\n";
-    std::cout << "\n.text hexdump:\n";
-    for(size_t i = 0; i < textSection.size(); ++i) {
-        printf("%02x ", textSection[i]);
-        if ((i+1) % 16 == 0) printf("\n");
-    }
-    printf("\n");
-    std::cout << "\n==== END DEBUG INFORMATION ====\n\n";
-}
+    // Handle two-operand instructions
+    if (instr.operands.size() == 2) {
+        const auto& op1 = instr.operands[0];
+        const auto& op2 = instr.operands[1];
+
+        // Enhanced operand handling with size support
+        if (op1.type == OperandType::REGISTER && op2.type == OperandType::IMMEDIATE) {
+            uint8_t reg_code = get_register_code(op1.value);
+            int64_t imm = std::stoll(op2.value);
+            uint8_t modrm_ext = (m == "add") ? 0 : (m == "sub") ? 5 : (m == "cmp") ? 7 : 0;
+
+            // Determine operand size
+            OperandSize actual_size = op1.size;
+            if (actual_size == OperandSize::INFERRED) {
+                // Infer from register name
+                if (op1.value.length() == 2 && (op1.value[1] == 'l' || op1.value[1] == 'h')) {
+                    actual_size = OperandSize::BYTE;
+                } else if (op1.value[0] == 'e' || op1.value.find('d') == op1.value.length()-1) {
+                    actual_size = OperandSize::DWORD;
+                } else {
+                    actual_size = OperandSize::QWORD;
+                }
+            }
+
+            // Generate appropriate prefixes
+            uint8_t rex = 0x40;
+            if (actual_size == OperandSize::QWORD) rex |= 0x08; // REX.W
+            if (reg_code >= 8) rex |= 0x01; // REX.B
+
+            if (actual_size == OperandSize::WORD) {
+                textSection.push_back(0x66); // Operand size override
+            }
+
+            if (m == "mov") {
+                if (rex != 0x40) textSection.push_back(rex);
+
+                if (actual_size == OperandSize::BYTE) {
+                    textSection.push_back(0xB0 + (reg_code & 7)); // MOV r8, imm8
+                    textSection.push_back(static_cast<uint8_t>(imm));
+                } else if (imm >= -2147483648LL && imm <= 2147483647LL) {
+                    textSection.push_back(0xC7);
+                    textSection.push_back(0xC0 | (reg_code & 7));
+                    for(int i = 0; i < 4; ++i) {
+                        textSection.push_back((static_cast<uint32_t>(imm) >> (i*8)) & 0xFF);
+                    }
+                } else {
+                    textSection.push_back(0xB8 + (reg_code & 7)); // MOV r64, imm64
+                    for(int i = 0; i < 8; ++i) {
+                        textSection.push_back((imm >> (i*8)) & 0xFF);
+                    }
+                }
+            } else {
+                if (rex != 0x40) textSection.push_back(rex);
+
+                if (actual_size == OperandSize::BYTE) {
+                    textSection.push_back(0x80);
+                    textSection.push_back(0xC0 | (modrm_ext << 3) | (reg_code & 7));
+                    textSection.push_back(static_cast<uint8_t>(imm));
+                } else if (imm >= -128 && imm <= 127) {
+                    textSection.push_back(0x83);
+                    textSection.push_back(0xC0 | (modrm_ext << 3) | (reg_code & 7));
+                    textSection.push_back(static_cast<uint8_t>(imm));
+                } else {
+                    textSection.push_back(0x81);
+                    textSection.push_back(0xC0 | (modrm_ext << 3) | (reg_code & 7));
+                    for(int i = 0; i < 4; ++i) {
+                        textSection.push_back((static_cast<uint32_t>(imm) >> (i*8)) & 0xFF);
+                    }
+                }
+            }
+        }
+        // Add other operand combinations as needed...
+        else {
+            // Fall back to original implementation for now
+            if (op1.type == OperandType::MEMORY && op2.type == OperandType::IMMEDIATE) {
+                uint8_t modrm_ext = (m == "add") ? 0 : (m == "sub") ? 5 : 7;
+                int64_t imm = std::stoll(op2.value);
+                textSection.push_back(0x48);
+                textSection.push_back((imm >= -128 && imm <= 127) ? 0x83 : 0x81);
+                textSection.push_back((0b00 << 6) | (modrm_ext << 3) | 0b101);
+                int32_t disp = symbolTable.at(op1.value).address - (instr.address + instr.size);
+                for(int i = 0; i < 4; ++i) {
+                    textSection.push_back((disp >> (i*8)) & 0xFF);
+                }
+                if (imm >= -128 && imm <= 127) {
+                    textSection.push_back(static_cast<uint8_t>(imm));
+                } else {
+                    for(int i = 0; i < 4; ++i) {
+                        textSection.push_back((static_cast<uint32_t>(imm) >> (i*8)) & 0xFF);
+                    }
+                }
+            } else if (op1.type == OperandType::REGISTER && op2.type == OperandType::MEMORY) {
+                uint8_t opcode = (m == "mov") ? 0x8B : (m == "add") ? 0x03 : 0x2B;
+                uint8_t reg_code = get_register_code(op1.value);
+                textSection.push_back(0x48 | ((reg_code >= 8) ? 4 : 0));
+                textSection.push_back(opcode);
+                if (op2.value.find("rsp") != std::string::npos) {
+                    textSection.push_back((0b01 << 6) | ((reg_code & 7) << 3) | 0b100);
+                    textSection.push_back(0x24);
+                    textSection.push_back(8);
+                } else {
+                    textSection.push_back((0b00 << 6) | ((reg_code & 7) << 3) | 0b101);
