@@ -722,44 +722,96 @@ void Assembler::encode_sse_instruction(const Instruction& instr) {
     const auto& dst = instr.operands[0];
     const auto& src = instr.operands[1];
 
-    if (dst.type != OperandType::XMM_REGISTER) {
-        throw std::runtime_error("First operand must be XMM register for SSE instruction");
+    // For most SSE instructions, destination must be XMM register
+    // Some instructions like movss can have different patterns
+    if (m.find("mov") == 0) {
+        // MOV instructions can have XMM->memory or memory->XMM
+        if (dst.type != OperandType::XMM_REGISTER && src.type != OperandType::XMM_REGISTER) {
+            throw std::runtime_error("At least one operand must be XMM register for SSE MOV instruction");
+        }
+    } else {
+        // Arithmetic instructions require XMM destination
+        if (dst.type != OperandType::XMM_REGISTER) {
+            throw std::runtime_error("First operand must be XMM register for SSE instruction");
+        }
     }
 
-    uint8_t dst_reg = get_xmm_register_code(dst.value);
+    uint8_t dst_reg = (dst.type == OperandType::XMM_REGISTER) ? get_xmm_register_code(dst.value) : 0;
+    uint8_t src_reg = (src.type == OperandType::XMM_REGISTER) ? get_xmm_register_code(src.value) : 0;
 
     // SSE instruction prefixes and opcodes
     if (m == "movss") {
         textSection.push_back(0xF3); // REP prefix for scalar single
         textSection.push_back(0x0F);
-        if (src.type == OperandType::XMM_REGISTER) {
+
+        if (dst.type == OperandType::XMM_REGISTER && src.type == OperandType::XMM_REGISTER) {
             textSection.push_back(0x10); // MOVSS xmm, xmm
-            uint8_t src_reg = get_xmm_register_code(src.value);
             textSection.push_back(0xC0 | (dst_reg << 3) | src_reg);
-        } else if (src.type == OperandType::MEMORY) {
+        } else if (dst.type == OperandType::XMM_REGISTER && src.type == OperandType::MEMORY) {
             textSection.push_back(0x10); // MOVSS xmm, m32
-            textSection.push_back((0b00 << 6) | (dst_reg << 3) | 0b101); // ModR/M
-            // Add displacement (simplified - assumes RIP-relative)
-            uint64_t target_addr = symbolTable.at(src.value).address;
-            int32_t rel_addr = target_addr - (instr.address + instr.size);
-            for (int i = 0; i < 4; ++i) {
-                textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+            textSection.push_back((0b00 << 6) | (dst_reg << 3) | 0b101); // ModR/M for RIP-relative
+            // Add displacement (RIP-relative addressing)
+            if (symbolTable.find(src.value) != symbolTable.end()) {
+                uint64_t target_addr = symbolTable.at(src.value).address;
+                int32_t rel_addr = target_addr - (instr.address + instr.size);
+                for (int i = 0; i < 4; ++i) {
+                    textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+                }
+            } else {
+                // Symbol not found, add zero displacement for now
+                for (int i = 0; i < 4; ++i) {
+                    textSection.push_back(0);
+                }
+            }
+        } else if (dst.type == OperandType::MEMORY && src.type == OperandType::XMM_REGISTER) {
+            textSection.push_back(0x11); // MOVSS m32, xmm
+            textSection.push_back((0b00 << 6) | (src_reg << 3) | 0b101); // ModR/M for RIP-relative
+            if (symbolTable.find(dst.value) != symbolTable.end()) {
+                uint64_t target_addr = symbolTable.at(dst.value).address;
+                int32_t rel_addr = target_addr - (instr.address + instr.size);
+                for (int i = 0; i < 4; ++i) {
+                    textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+                }
+            } else {
+                for (int i = 0; i < 4; ++i) {
+                    textSection.push_back(0);
+                }
             }
         }
     } else if (m == "movsd") {
         textSection.push_back(0xF2); // REPNE prefix for scalar double
         textSection.push_back(0x0F);
-        if (src.type == OperandType::XMM_REGISTER) {
+
+        if (dst.type == OperandType::XMM_REGISTER && src.type == OperandType::XMM_REGISTER) {
             textSection.push_back(0x10); // MOVSD xmm, xmm
-            uint8_t src_reg = get_xmm_register_code(src.value);
             textSection.push_back(0xC0 | (dst_reg << 3) | src_reg);
-        } else if (src.type == OperandType::MEMORY) {
+        } else if (dst.type == OperandType::XMM_REGISTER && src.type == OperandType::MEMORY) {
             textSection.push_back(0x10); // MOVSD xmm, m64
             textSection.push_back((0b00 << 6) | (dst_reg << 3) | 0b101); // ModR/M
-            uint64_t target_addr = symbolTable.at(src.value).address;
-            int32_t rel_addr = target_addr - (instr.address + instr.size);
-            for (int i = 0; i < 4; ++i) {
-                textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+            if (symbolTable.find(src.value) != symbolTable.end()) {
+                uint64_t target_addr = symbolTable.at(src.value).address;
+                int32_t rel_addr = target_addr - (instr.address + instr.size);
+                for (int i = 0; i < 4; ++i) {
+                    textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+                }
+            } else {
+                for (int i = 0; i < 4; ++i) {
+                    textSection.push_back(0);
+                }
+            }
+        } else if (dst.type == OperandType::MEMORY && src.type == OperandType::XMM_REGISTER) {
+            textSection.push_back(0x11); // MOVSD m64, xmm
+            textSection.push_back((0b00 << 6) | (src_reg << 3) | 0b101); // ModR/M
+            if (symbolTable.find(dst.value) != symbolTable.end()) {
+                uint64_t target_addr = symbolTable.at(dst.value).address;
+                int32_t rel_addr = target_addr - (instr.address + instr.size);
+                for (int i = 0; i < 4; ++i) {
+                    textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+                }
+            } else {
+                for (int i = 0; i < 4; ++i) {
+                    textSection.push_back(0);
+                }
             }
         }
     } else if (m == "addss") {
@@ -1059,3 +1111,137 @@ void Assembler::encode_x86_64(const Instruction& instr) {
                     textSection.push_back(8);
                 } else {
                     textSection.push_back((0b00 << 6) | ((reg_code & 7) << 3) | 0b101);
+                    int32_t disp = symbolTable.at(op2.value).address - (instr.address + instr.size);
+                    for(int i = 0; i < 4; ++i) {
+                        textSection.push_back((disp >> (i*8)) & 0xFF);
+                    }
+                }
+            } else if (op1.type == OperandType::REGISTER && op2.type == OperandType::REGISTER) {
+                uint8_t opcode = (m == "mov") ? 0x89 : (m == "add") ? 0x01 : (m == "sub") ? 0x29 : 0x39;
+                uint8_t dst_reg = get_register_code(op1.value);
+                uint8_t src_reg = get_register_code(op2.value);
+
+                // Determine operand size
+                OperandSize actual_size = op1.size;
+                if (actual_size == OperandSize::INFERRED) {
+                    actual_size = OperandSize::QWORD; // Default
+                }
+
+                // Generate REX prefix
+                uint8_t rex = 0x40;
+                if (actual_size == OperandSize::QWORD) rex |= 0x08; // REX.W
+                if (src_reg >= 8) rex |= 0x04; // REX.R
+                if (dst_reg >= 8) rex |= 0x01; // REX.B
+
+                if (actual_size == OperandSize::WORD) {
+                    textSection.push_back(0x66); // Operand size override
+                }
+
+                if (rex != 0x40) textSection.push_back(rex);
+
+                if (actual_size == OperandSize::BYTE) {
+                    textSection.push_back(opcode - 1); // Byte variants are one less
+                } else {
+                    textSection.push_back(opcode);
+                }
+
+                textSection.push_back(0xC0 | ((src_reg & 7) << 3) | (dst_reg & 7));
+            }
+        }
+    }
+}
+
+const std::unordered_map<std::string, SymbolEntry>& Assembler::getSymbols() const {
+    return symbolTable;
+}
+
+const std::vector<uint8_t>& Assembler::getTextSection() const {
+    return textSection;
+}
+
+const std::vector<uint8_t>& Assembler::getDataSection() const {
+    return dataSection;
+}
+
+const std::vector<uint8_t>& Assembler::getBssSection() const {
+    return bssSection;
+}
+
+const std::vector<uint8_t>& Assembler::getRodataSection() const {
+    return rodataSection;
+}
+
+const std::unordered_map<std::string, std::vector<uint8_t>>& Assembler::getCustomSections() const {
+    return customSections;
+}
+
+uint64_t Assembler::getEntryPoint() const {
+    return entryPoint;
+}
+
+void Assembler::printDebugInfo() const {
+    std::cout << "\n==== ASSEMBLER DEBUG INFORMATION ====\n\n";
+
+    std::cout << "SYMBOLS:\n";
+    for(const auto& pair : symbolTable) {
+        const auto& sym = pair.second;
+        std::cout << "  " << pair.first << ": 0x" << std::hex << sym.address
+                  << " (global: " << sym.isGlobal << ", type: " << sym.type << ")\n";
+    }
+
+    std::cout << "\nENTRY POINT: 0x" << std::hex << entryPoint << std::dec << "\n";
+
+    std::cout << "\nSECTION SIZES:\n";
+    std::cout << "  .text: " << textSection.size() << " bytes\n";
+    std::cout << "  .data: " << dataSection.size() << " bytes\n";
+    std::cout << "  .bss: " << bssSection.size() << " bytes\n";
+    std::cout << "  .rodata: " << rodataSection.size() << " bytes\n";
+
+    for (const auto& pair : customSections) {
+        std::cout << "  " << pair.first << ": " << pair.second.size() << " bytes\n";
+    }
+
+    if (textSection.size() > 0) {
+        std::cout << "\n.text hexdump:\n";
+        for(size_t i = 0; i < textSection.size(); ++i) {
+            printf("%02x ", textSection[i]);
+            if ((i+1) % 16 == 0) printf("\n");
+        }
+        printf("\n");
+    }
+
+    if (dataSection.size() > 0) {
+        std::cout << "\n.data hexdump:\n";
+        for(size_t i = 0; i < dataSection.size(); ++i) {
+            printf("%02x ", dataSection[i]);
+            if ((i+1) % 16 == 0) printf("\n");
+        }
+        printf("\n");
+    }
+
+    if (rodataSection.size() > 0) {
+        std::cout << "\n.rodata hexdump:\n";
+        for(size_t i = 0; i < rodataSection.size(); ++i) {
+            printf("%02x ", rodataSection[i]);
+            if ((i+1) % 16 == 0) printf("\n");
+        }
+        printf("\n");
+    }
+
+    std::cout << "\nMACROS DEFINED:\n";
+    for (const auto& pair : macros) {
+        std::cout << "  " << pair.first << " (";
+        for (size_t i = 0; i < pair.second.parameters.size(); ++i) {
+            std::cout << pair.second.parameters[i];
+            if (i < pair.second.parameters.size() - 1) std::cout << ", ";
+        }
+        std::cout << ")\n";
+    }
+
+    std::cout << "\nDEFINES:\n";
+    for (const auto& pair : defines) {
+        std::cout << "  " << pair.first << " = " << pair.second << "\n";
+    }
+
+    std::cout << "\n==== END DEBUG INFORMATION ====\n\n";
+}
