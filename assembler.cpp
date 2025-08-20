@@ -111,11 +111,13 @@ uint64_t Assembler::get_instruction_size(const Instruction& instr) {
     else if (m == "push") {
         if (instr.operands.empty()) return 0;
         if (instr.operands[0].type == OperandType::REGISTER) base_size = (register_map.at(instr.operands[0].value) >= 8) ? 2 : 1;
+        else if (instr.operands[0].type == OperandType::MEMORY) base_size = 6;
         else if (instr.operands[0].type == OperandType::IMMEDIATE) base_size = 5;
     }
     else if (m == "pop") {
         if (instr.operands.empty()) return 0;
-        base_size = (register_map.at(instr.operands[0].value) >= 8) ? 2 : 1;
+        if (instr.operands[0].type == OperandType::REGISTER) base_size = (register_map.at(instr.operands[0].value) >= 8) ? 2 : 1;
+        else if (instr.operands[0].type == OperandType::MEMORY) base_size = 6;
     }
     else if (m == "call" || m == "jmp") base_size = 5;
     else if (m == "je" || m == "jne" || m == "jz" || m == "jnz" || m == "jl" || m == "jle" || m == "jg" || m == "jge") base_size = 6;
@@ -131,7 +133,10 @@ uint64_t Assembler::get_instruction_size(const Instruction& instr) {
             else if (op1.type == OperandType::MEMORY && op2.type == OperandType::REGISTER) base_size = 7;
             else if (op1.type == OperandType::REGISTER && op2.type == OperandType::REGISTER) base_size = 3;
             else if (op1.type == OperandType::REGISTER && op2.type == OperandType::IMMEDIATE) {
-                int64_t imm = std::stoll(op2.value);
+                int64_t imm;
+                std::stringstream ss;
+                ss << std::hex << op2.value;
+                ss >> imm;
                 if (m == "mov") base_size = (imm >= -2147483648LL && imm <= 2147483647LL) ? 5 : 10; // mov r, imm32 vs imm64
                 else base_size = (imm >= -128 && imm <= 127) ? 4 : 7; // add/sub/cmp r, imm8 vs imm32
             }
@@ -190,9 +195,19 @@ void Assembler::encode_x86_64(const Instruction& instr) {
     if (m == "push") {
         if (instr.operands[0].type == OperandType::IMMEDIATE) {
             textSection.push_back(0x68);
-            int32_t imm = std::stoll(instr.operands[0].value);
+            uint32_t imm;
+            std::stringstream ss;
+            ss << std::hex << instr.operands[0].value;
+            ss >> imm;
             for(int i=0; i<4; ++i) textSection.push_back((imm >> (i*8)) & 0xFF);
-        } else {
+        } else if (instr.operands[0].type == OperandType::MEMORY) {
+            textSection.push_back(0xFF);
+            textSection.push_back(0x35);
+            uint64_t target_addr = symbolTable.at(instr.operands[0].value).address;
+            int32_t rel_addr = target_addr - (instr.address + instr.size);
+            for (int i = 0; i < 4; ++i) textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+        }
+        else {
             uint8_t reg_code = register_map.at(instr.operands[0].value);
             if (reg_code >= 8) textSection.push_back(0x41);
             textSection.push_back(0x50 + (reg_code & 7));
@@ -200,9 +215,17 @@ void Assembler::encode_x86_64(const Instruction& instr) {
         return;
     }
     if (m == "pop") {
-        uint8_t reg_code = register_map.at(instr.operands[0].value);
-        if (reg_code >= 8) textSection.push_back(0x41);
-        textSection.push_back(0x58 + (reg_code & 7));
+        if (instr.operands[0].type == OperandType::MEMORY) {
+            textSection.push_back(0x8F);
+            textSection.push_back(0x05);
+            uint64_t target_addr = symbolTable.at(instr.operands[0].value).address;
+            int32_t rel_addr = target_addr - (instr.address + instr.size);
+            for (int i = 0; i < 4; ++i) textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+        } else {
+            uint8_t reg_code = register_map.at(instr.operands[0].value);
+            if (reg_code >= 8) textSection.push_back(0x41);
+            textSection.push_back(0x58 + (reg_code & 7));
+        }
         return;
     }
     if (m == "call" || m == "jmp" || m == "je" || m == "jne" || m == "jz" || m == "jnz" || m == "jl" || m == "jle" || m == "jg" || m == "jge") {
@@ -253,7 +276,10 @@ void Assembler::encode_x86_64(const Instruction& instr) {
     } else if (op1.type == OperandType::REGISTER && op2.type == OperandType::IMMEDIATE) {
         uint8_t reg_code = register_map.at(op1.value);
         uint8_t modrm_ext = (m == "add") ? 0 : (m == "sub") ? 5 : (m == "cmp") ? 7 : 0;
-        int64_t imm = std::stoll(op2.value);
+        int64_t imm;
+        std::stringstream ss;
+        ss << std::hex << op2.value;
+        ss >> imm;
         uint8_t rex = 0x48 | ((reg_code >= 8) ? 1 : 0);
         if (m == "mov") {
             textSection.push_back(rex);
