@@ -411,7 +411,13 @@ std::vector<Instruction> Assembler::parse(const std::string& source) {
             instr.label = token.substr(0, token.size() - 1);
             instr.original_line = original_line;
             instructions.push_back(instr);
-            continue;
+
+            // Check for instruction on the same line
+            if (line_stream >> token) {
+                // Fall through to instruction processing
+            } else {
+                continue;
+            }
         }
 
         // Handle section directives
@@ -461,12 +467,66 @@ std::vector<Instruction> Assembler::parse(const std::string& source) {
         }
 
         // Handle other directives
-        if (token == ".global") {
-            std::string symbol;
-            line_stream >> symbol;
-            global_symbols.insert(symbol);
+        if (token == ".global" || token == ".globl") {
+            std::string symbol_name;
+            while (line_stream >> symbol_name) {
+                if (symbolTable.find(symbol_name) == symbolTable.end()) {
+                    symbolTable[symbol_name] = SymbolEntry{};
+                }
+                symbolTable[symbol_name].binding = SymbolBinding::GLOBAL;
+            }
             continue;
         }
+
+        if (token == ".weak") {
+            std::string symbol_name;
+            while (line_stream >> symbol_name) {
+                if (symbolTable.find(symbol_name) == symbolTable.end()) {
+                    symbolTable[symbol_name] = SymbolEntry{};
+                }
+                symbolTable[symbol_name].binding = SymbolBinding::WEAK;
+            }
+            continue;
+        }
+
+        if (token == ".local") {
+            std::string symbol_name;
+            while (line_stream >> symbol_name) {
+                if (symbolTable.find(symbol_name) == symbolTable.end()) {
+                    symbolTable[symbol_name] = SymbolEntry{};
+                }
+                symbolTable[symbol_name].binding = SymbolBinding::LOCAL;
+            }
+            continue;
+        }
+
+        if (token == ".extern") {
+            std::string symbol_name;
+            while (line_stream >> symbol_name) {
+                if (symbolTable.find(symbol_name) == symbolTable.end()) {
+                    symbolTable[symbol_name] = SymbolEntry{};
+                }
+                symbolTable[symbol_name].binding = SymbolBinding::GLOBAL;
+                symbolTable[symbol_name].isDefined = false;
+            }
+            continue;
+        }
+
+        if (token == ".type") {
+            std::string symbol_name, type_str;
+            line_stream >> symbol_name;
+            line_stream >> type_str;
+            if (symbolTable.find(symbol_name) == symbolTable.end()) {
+                symbolTable[symbol_name] = SymbolEntry{};
+            }
+            if (type_str == "@function") {
+                symbolTable[symbol_name].type = SymbolType::FUNCTION;
+            } else if (type_str == "@object") {
+                symbolTable[symbol_name].type = SymbolType::OBJECT;
+            }
+            continue;
+        }
+
 
         if (token == ".align") {
             // Handle alignment - simplified implementation
@@ -546,14 +606,27 @@ void Assembler::switch_section(const SectionInfo& section_info) {
     sectionInfoMap[section_info.name] = section_info;
 }
 
-uint64_t Assembler::get_section_base(Section section) const {
+uint64_t Assembler::get_section_base_address(Section section) const {
     switch (section) {
     case Section::TEXT: return textSectionBase;
     case Section::DATA: return dataSectionBase;
     case Section::BSS: return bssSectionBase;
     case Section::RODATA: return rodataSectionBase;
-    default: return dataSectionBase; // Default for custom sections
+    default: return 0; // Default for custom/unknown sections
     }
+}
+
+uint64_t Assembler::getSectionBase(Section s) const {
+    return get_section_base_address(s);
+}
+
+std::string Assembler::getSectionName(Section s) const {
+    for (const auto& pair : sectionInfoMap) {
+        if (pair.second.type == s) {
+            return pair.first;
+        }
+    }
+    return "";
 }
 
 std::vector<uint8_t>& Assembler::get_section_data(Section section) {
@@ -673,38 +746,41 @@ void Assembler::first_pass(std::vector<Instruction>& instructions) {
     for (auto& instr : instructions) {
         Section section = instr.section;
         uint64_t& offset = section_offsets[section];
-        uint64_t base_addr = get_section_base(section);
+        uint64_t base_addr = get_section_base_address(section);
 
         instr.address = base_addr + offset;
 
         if (instr.is_label) {
-            SymbolEntry entry;
+            if (symbolTable.find(instr.label) == symbolTable.end()) {
+                symbolTable[instr.label] = SymbolEntry{};
+            }
+            SymbolEntry& entry = symbolTable[instr.label];
             entry.name = instr.label;
             entry.address = instr.address;
-            entry.isGlobal = global_symbols.count(instr.label) > 0;
-            entry.isExternal = false;
             entry.section = section;
+            entry.isDefined = true;
 
-            // Determine symbol type based on section
-            if (section == Section::TEXT) {
-                entry.type = "function";
-            } else {
-                entry.type = "object";
+            if (entry.type == SymbolType::NOTYPE) {
+                if (section == Section::TEXT) {
+                    entry.type = SymbolType::FUNCTION;
+                } else {
+                    entry.type = SymbolType::OBJECT;
+                }
             }
-
-            symbolTable[instr.label] = entry;
 
             if (instr.label == "_start") {
                 entryPoint = instr.address;
             }
 
-            // Handle data for labels
+            uint64_t data_size = 0;
             if (std::holds_alternative<std::vector<uint8_t>>(instr.data)) {
-                auto& data_bytes = std::get<std::vector<uint8_t>>(instr.data);
-                offset += data_bytes.size();
+                data_size = std::get<std::vector<uint8_t>>(instr.data).size();
             } else if (std::holds_alternative<int64_t>(instr.data)) {
-                offset += 8; // Legacy .quad support
+                data_size = 8; // Legacy .quad support
             }
+            entry.size = data_size;
+            offset += data_size;
+
         } else if (!instr.mnemonic.empty()) {
             instr.size = get_instruction_size(instr);
             offset += instr.size;
@@ -986,25 +1062,64 @@ void Assembler::encode_x86_64(const Instruction& instr) {
             throw std::runtime_error("Invalid operands for " + m);
         }
 
-        uint64_t target_addr = symbolTable.at(instr.operands[0].value).address;
-        int32_t rel_addr = target_addr - (instr.address + instr.size);
+        const std::string& symbol_name = instr.operands[0].value;
+        auto it = symbolTable.find(symbol_name);
 
-        if (m == "call") {
-            textSection.push_back(0xE8);
-        } else if (m == "jmp") {
-            textSection.push_back(0xE9);
+        if (it != symbolTable.end() && it->second.isDefined) {
+            // Internal symbol, calculate relative address
+            uint64_t target_addr = it->second.address;
+            int32_t rel_addr = target_addr - (instr.address + instr.size);
+
+            if (m == "call") textSection.push_back(0xE8);
+            else if (m == "jmp") textSection.push_back(0xE9);
+            else {
+                textSection.push_back(0x0F);
+                if (m == "je" || m == "jz") textSection.push_back(0x84);
+                else if (m == "jne" || m == "jnz") textSection.push_back(0x85);
+                else if (m == "jl") textSection.push_back(0x8C);
+                else if (m == "jle") textSection.push_back(0x8E);
+                else if (m == "jg") textSection.push_back(0x8F);
+                else if (m == "jge") textSection.push_back(0x8D);
+            }
+            for (int i = 0; i < 4; ++i) {
+                textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+            }
         } else {
-            textSection.push_back(0x0F);
-            if (m == "je" || m == "jz") textSection.push_back(0x84);
-            else if (m == "jne" || m == "jnz") textSection.push_back(0x85);
-            else if (m == "jl") textSection.push_back(0x8C);
-            else if (m == "jle") textSection.push_back(0x8E);
-            else if (m == "jg") textSection.push_back(0x8F);
-            else if (m == "jge") textSection.push_back(0x8D);
-        }
+            // External symbol, create relocation
+            if (it == symbolTable.end()) {
+                symbolTable[symbol_name] = {symbol_name, 0, 0, SymbolBinding::GLOBAL, SymbolType::NOTYPE, SymbolVisibility::DEFAULT, Section::NONE, false};
+            }
 
-        for (int i = 0; i < 4; ++i) {
-            textSection.push_back((rel_addr >> (i * 8)) & 0xFF);
+            uint64_t relocation_offset = textSection.size() + 1; // Relocation is for the 4 bytes after opcode
+            if (m != "call" && m != "jmp") {
+                relocation_offset++; // 2-byte opcode for conditional jumps
+            }
+
+            RelocationEntry reloc = {
+                relocation_offset,
+                symbol_name,
+                RelocationType::R_X86_64_PC32,
+                -4,
+                Section::TEXT
+            };
+            relocations.push_back(reloc);
+
+            if (m == "call") textSection.push_back(0xE8);
+            else if (m == "jmp") textSection.push_back(0xE9);
+            else {
+                textSection.push_back(0x0F);
+                if (m == "je" || m == "jz") textSection.push_back(0x84);
+                else if (m == "jne" || m == "jnz") textSection.push_back(0x85);
+                else if (m == "jl") textSection.push_back(0x8C);
+                else if (m == "jle") textSection.push_back(0x8E);
+                else if (m == "jg") textSection.push_back(0x8F);
+                else if (m == "jge") textSection.push_back(0x8D);
+            }
+
+            // Write 4 bytes of placeholder
+            for (int i = 0; i < 4; ++i) {
+                textSection.push_back(0);
+            }
         }
         return;
     }
@@ -1015,7 +1130,31 @@ void Assembler::encode_x86_64(const Instruction& instr) {
         const auto& op2 = instr.operands[1];
 
         // Enhanced operand handling with size support
-        if (op1.type == OperandType::REGISTER && op2.type == OperandType::IMMEDIATE) {
+        if (op1.type == OperandType::REGISTER && op2.type == OperandType::LABEL) {
+            // This should be a RIP-relative LEA instruction
+            uint8_t reg_code = get_register_code(op1.value);
+            textSection.push_back(0x48);
+            textSection.push_back(0x8d);
+            textSection.push_back((0b00 << 6) | (reg_code << 3) | 0b101);
+
+            const std::string& symbol_name = op2.value;
+            auto it = symbolTable.find(symbol_name);
+            if (it == symbolTable.end()) {
+                symbolTable[symbol_name] = {symbol_name, 0, 0, SymbolBinding::GLOBAL, SymbolType::OBJECT, SymbolVisibility::DEFAULT, Section::NONE, false};
+            }
+            RelocationEntry reloc = {
+                textSection.size(),
+                it->second.section == Section::DATA ? ".data" : symbol_name,
+                RelocationType::R_X86_64_PC32,
+                it->second.section == Section::DATA ? it->second.address - get_section_base_address(it->second.section) : -4,
+                Section::TEXT
+            };
+            relocations.push_back(reloc);
+            for(int i = 0; i < 4; ++i) {
+                textSection.push_back(0); // Placeholder
+            }
+        }
+        else if (op1.type == OperandType::REGISTER && op2.type == OperandType::IMMEDIATE) {
             uint8_t reg_code = get_register_code(op1.value);
             int64_t imm = std::stoll(op2.value);
             uint8_t modrm_ext = (m == "add") ? 0 : (m == "sub") ? 5 : (m == "cmp") ? 7 : 0;
@@ -1103,17 +1242,41 @@ void Assembler::encode_x86_64(const Instruction& instr) {
             } else if (op1.type == OperandType::REGISTER && op2.type == OperandType::MEMORY) {
                 uint8_t opcode = (m == "mov") ? 0x8B : (m == "add") ? 0x03 : 0x2B;
                 uint8_t reg_code = get_register_code(op1.value);
-                textSection.push_back(0x48 | ((reg_code >= 8) ? 4 : 0));
-                textSection.push_back(opcode);
-                if (op2.value.find("rsp") != std::string::npos) {
-                    textSection.push_back((0b01 << 6) | ((reg_code & 7) << 3) | 0b100);
-                    textSection.push_back(0x24);
-                    textSection.push_back(8);
+
+                const std::string& symbol_name = op2.value;
+                auto it = symbolTable.find(symbol_name);
+
+                if (it != symbolTable.end() && it->second.isDefined) {
+                    textSection.push_back(0x48 | ((reg_code >= 8) ? 4 : 0));
+                    textSection.push_back(opcode);
+                    if (op2.value.find("rsp") != std::string::npos) {
+                        textSection.push_back((0b01 << 6) | ((reg_code & 7) << 3) | 0b100);
+                        textSection.push_back(0x24);
+                        textSection.push_back(8);
+                    } else {
+                        textSection.push_back((0b00 << 6) | ((reg_code & 7) << 3) | 0b101);
+                        int32_t disp = it->second.address - (instr.address + instr.size);
+                        for(int i = 0; i < 4; ++i) {
+                            textSection.push_back((disp >> (i*8)) & 0xFF);
+                        }
+                    }
                 } else {
-                    textSection.push_back((0b00 << 6) | ((reg_code & 7) << 3) | 0b101);
-                    int32_t disp = symbolTable.at(op2.value).address - (instr.address + instr.size);
+                    if (it == symbolTable.end()) {
+                        symbolTable[symbol_name] = {symbol_name, 0, 0, SymbolBinding::GLOBAL, SymbolType::OBJECT, SymbolVisibility::DEFAULT, Section::NONE, false};
+                    }
+                    RelocationEntry reloc = {
+                        textSection.size() + 3, // Offset of displacement from start of instruction
+                        symbol_name,
+                        RelocationType::R_X86_64_PC32,
+                        -4,
+                        Section::TEXT
+                    };
+                    relocations.push_back(reloc);
+                    textSection.push_back(0x48 | ((reg_code >= 8) ? 4 : 0));
+                    textSection.push_back(opcode);
+                    textSection.push_back((0b00 << 6) | ((reg_code & 7) << 3) | 0b101); // ModR/M for RIP-relative
                     for(int i = 0; i < 4; ++i) {
-                        textSection.push_back((disp >> (i*8)) & 0xFF);
+                        textSection.push_back(0); // Placeholder
                     }
                 }
             } else if (op1.type == OperandType::REGISTER && op2.type == OperandType::REGISTER) {
@@ -1155,6 +1318,10 @@ const std::unordered_map<std::string, SymbolEntry>& Assembler::getSymbols() cons
     return symbolTable;
 }
 
+const std::vector<RelocationEntry>& Assembler::getRelocations() const {
+    return relocations;
+}
+
 const std::vector<uint8_t>& Assembler::getTextSection() const {
     return textSection;
 }
@@ -1186,7 +1353,20 @@ void Assembler::printDebugInfo() const {
     for(const auto& pair : symbolTable) {
         const auto& sym = pair.second;
         std::cout << "  " << pair.first << ": 0x" << std::hex << sym.address
-                  << " (global: " << sym.isGlobal << ", type: " << sym.type << ")\n";
+                  << " (binding: ";
+        switch (sym.binding) {
+            case SymbolBinding::LOCAL: std::cout << "LOCAL"; break;
+            case SymbolBinding::GLOBAL: std::cout << "GLOBAL"; break;
+            case SymbolBinding::WEAK: std::cout << "WEAK"; break;
+        }
+        std::cout << ", type: ";
+        switch (sym.type) {
+            case SymbolType::NOTYPE: std::cout << "NOTYPE"; break;
+            case SymbolType::OBJECT: std::cout << "OBJECT"; break;
+            case SymbolType::FUNCTION: std::cout << "FUNC"; break;
+            case SymbolType::SECTION: std::cout << "SECTION"; break;
+        }
+        std::cout << ", defined: " << sym.isDefined << ")\n";
     }
 
     std::cout << "\nENTRY POINT: 0x" << std::hex << entryPoint << std::dec << "\n";

@@ -14,7 +14,7 @@ struct ElfSegment;
 class ElfGenerator {
 public:
     // Construction and configuration
-    explicit ElfGenerator(bool is64Bit = true, uint64_t baseAddress = 0x400000);
+    explicit ElfGenerator(const Assembler& assembler, const std::string& inputFilename, bool is64Bit = true, uint64_t baseAddress = 0x400000);
     ~ElfGenerator();
 
     // Section management
@@ -35,20 +35,24 @@ public:
     bool generateElf(const std::vector<uint8_t> &textSection,
                      const std::string &outputFile,
                      const std::unordered_map<std::string, SymbolEntry> &symbols,
+                     const std::vector<RelocationEntry> &relocations,
                      const std::vector<uint8_t> &dataSection,
                      uint64_t entryPoint,
-                     uint64_t dataBase);
+                     uint64_t dataBase,
+                     bool generateRelocatable = false);
 
     bool generateElfWithAllSections(const std::vector<uint8_t> &textSection,
                                     const std::string &outputFile,
                                     const std::unordered_map<std::string, SymbolEntry> &symbols,
+                                    const std::vector<RelocationEntry> &relocations,
                                     const std::vector<uint8_t> &dataSection,
                                     const std::vector<uint8_t> &bssSection,
                                     const std::vector<uint8_t> &rodataSection,
                                     uint64_t entryPoint,
                                     uint64_t dataBase,
                                     uint64_t bssBase,
-                                    uint64_t rodataBase);
+                                    uint64_t rodataBase,
+                                    bool generateRelocatable = false);
 
     // Configuration
     void setBaseAddress(uint64_t address);

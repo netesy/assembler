@@ -42,16 +42,24 @@ The assembler currently supports the following x86-64 instructions:
     ```sh
     ./build.sh
     ```
-2.  **Run:**
-    The main driver program is in `main.cpp`, which contains a sample assembly program. To assemble and link it, run:
+2.  **To Generate an Executable:**
+    By default, the assembler generates a complete executable.
     ```sh
-    ./build/assembler
+    ./build/assembler <input_file.asm> -o <output_file>
     ```
-    This will create an executable file named `sample-exec.elf`.
+    This will create an executable file named `<output_file>.elf`.
 
-3.  **Execute the Sample:**
+3.  **To Generate a Relocatable Object File:**
+    Use the `-c` flag to generate a standard `.o` file that can be linked with other object files.
     ```sh
-    ./sample-exec.elf
+    ./build/assembler -c <input_file.asm> -o <output_file>
+    ```
+    This will create a relocatable object file named `<output_file>.o`.
+
+4.  **Linking with GCC:**
+    You can link the generated object file with other object files or libraries using a standard linker like GCC.
+    ```sh
+    gcc -no-pie <output_file>.o -o <final_executable>
     ```
 
 ## Sample Assembly Program

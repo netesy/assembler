@@ -79,13 +79,48 @@ struct Instruction {
     std::string original_line;
 };
 
+enum class SymbolBinding {
+    LOCAL,
+    GLOBAL,
+    WEAK
+};
+
+enum class SymbolType {
+    NOTYPE,
+    OBJECT,
+    FUNCTION,
+    SECTION
+};
+
+enum class SymbolVisibility {
+    DEFAULT,
+    HIDDEN,
+    PROTECTED
+};
+
 struct SymbolEntry
 {
     std::string name;
-    uint64_t address;
-    bool isGlobal;
-    bool isExternal;
-    std::string type; // "function", "object", "notype"
+    uint64_t address = 0;
+    uint64_t size = 0;
+    SymbolBinding binding = SymbolBinding::LOCAL;
+    SymbolType type = SymbolType::NOTYPE;
+    SymbolVisibility visibility = SymbolVisibility::DEFAULT;
+    Section section = Section::NONE;
+    bool isDefined = false;
+};
+
+enum class RelocationType {
+    R_X86_64_64,
+    R_X86_64_PC32,
+    R_X86_64_PLT32
+};
+
+struct RelocationEntry {
+    uint64_t offset;
+    std::string symbolName;
+    RelocationType type;
+    int64_t addend;
     Section section;
 };
 
@@ -98,7 +133,10 @@ public:
     bool assembleFile(const std::string &inputFile, const std::string &outputFile = "");
 
     const std::unordered_map<std::string, SymbolEntry> &getSymbols() const;
+    const std::vector<RelocationEntry> &getRelocations() const;
     const std::vector<uint8_t> &getTextSection() const;
+    uint64_t getSectionBase(Section s) const;
+    std::string getSectionName(Section s) const;
     const std::vector<uint8_t> &getDataSection() const;
     const std::vector<uint8_t> &getBssSection() const;
     const std::vector<uint8_t> &getRodataSection() const;
@@ -135,7 +173,7 @@ private:
 
     // Section management
     void switch_section(const SectionInfo& section_info);
-    uint64_t get_section_base(Section section) const;
+    uint64_t get_section_base_address(Section section) const;
     std::vector<uint8_t>& get_section_data(Section section);
 
     // Macro system
@@ -161,7 +199,7 @@ private:
     std::unordered_map<std::string, SectionInfo> sectionInfoMap;
 
     std::unordered_map<std::string, SymbolEntry> symbolTable;
-    std::set<std::string> global_symbols;
+    std::vector<RelocationEntry> relocations;
     std::unordered_map<std::string, Macro> macros;
     std::unordered_map<std::string, std::string> defines; // For %define
 
