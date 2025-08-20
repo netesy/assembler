@@ -10,12 +10,14 @@
 // ELF constants
 namespace {
 constexpr uint32_t ELF_MAGIC = 0x464C457F;
+constexpr uint16_t ET_REL = 1;
 constexpr uint16_t ET_EXEC = 2;
 constexpr uint16_t EM_X86_64 = 62;
 constexpr uint16_t SHT_NULL = 0;
 constexpr uint16_t SHT_PROGBITS = 1;
 constexpr uint16_t SHT_SYMTAB = 2;
 constexpr uint16_t SHT_STRTAB = 3;
+constexpr uint16_t SHT_RELA = 4;
 constexpr uint16_t SHT_NOBITS = 8;
 constexpr uint64_t SHF_WRITE = 0x1;
 constexpr uint64_t SHF_ALLOC = 0x2;
@@ -29,10 +31,25 @@ constexpr uint8_t STB_GLOBAL = 1;
 constexpr uint8_t STT_NOTYPE = 0;
 constexpr uint8_t STT_OBJECT = 1;
 constexpr uint8_t STT_FUNC = 2;
+constexpr uint8_t STT_SECTION = 3;
+constexpr uint8_t STT_FILE = 4;
+constexpr uint16_t SHN_UNDEF = 0;
 constexpr uint16_t SHN_ABS = 0xFFF1;
+
+// Relocation types for x86-64
+constexpr uint32_t R_X86_64_64 = 1;
+constexpr uint32_t R_X86_64_PC32 = 2;
+constexpr uint32_t R_X86_64_PLT32 = 4;
+
 }
 
 #pragma pack(push, 1)
+struct Elf64_Rela {
+    uint64_t r_offset;
+    uint64_t r_info;
+    int64_t  r_addend;
+};
+
 struct ElfHeader64 {
     unsigned char e_ident[16];
     uint16_t e_type;
@@ -88,28 +105,42 @@ inline uint8_t ELF64_ST_INFO(uint8_t bind, uint8_t type) {
     return (bind << 4) + (type & 0xF);
 }
 
+inline uint8_t ELF64_ST_BIND(uint8_t info) {
+    return info >> 4;
+}
+
+inline uint64_t ELF64_R_INFO(uint32_t sym, uint32_t type) {
+    return (static_cast<uint64_t>(sym) << 32) + type;
+}
+
 class ElfGenerator::Impl {
 public:
-    Impl(bool is64Bit, uint64_t baseAddr)
-        : is64Bit_(is64Bit), baseAddress_(baseAddr), entryPoint_(0), pageSize_(0x1000) {}
+    Impl(const Assembler& assembler, const std::string& inputFilename, bool is64Bit, uint64_t baseAddr)
+        : assembler_(assembler), inputFilename_(inputFilename), is64Bit_(is64Bit), baseAddress_(baseAddr), entryPoint_(0), pageSize_(0x1000) {}
 
     bool generate(const std::string& outputFile,
                   const std::vector<uint8_t>& textSectionData,
                   const std::vector<uint8_t>& dataSectionData,
                   const std::unordered_map<std::string, SymbolEntry>& symbols,
+                  const std::vector<RelocationEntry>& relocations,
                   uint64_t entryPoint,
                   uint64_t dataBase,
-                  const std::vector<uint8_t>& bssSectionData = {},
-                  const std::vector<uint8_t>& rodataSectionData = {},
-                  uint64_t bssBase = 0,
-                  uint64_t rodataBase = 0)
+                  const std::vector<uint8_t>& bssSectionData,
+                  const std::vector<uint8_t>& rodataSectionData,
+                  uint64_t bssBase,
+                  uint64_t rodataBase,
+                  bool generateRelocatable)
     {
         if (!is64Bit_) {
             lastError_ = "32-bit ELF generation is not supported.";
             return false;
         }
 
-        entryPoint_ = entryPoint;
+        entryPoint_ = generateRelocatable ? 0 : entryPoint;
+        uint64_t textBase = generateRelocatable ? 0 : baseAddress_;
+        uint64_t currentDataBase = generateRelocatable ? 0 : dataBase;
+        uint64_t currentBssBase = generateRelocatable ? 0 : bssBase;
+        uint64_t currentRodataBase = generateRelocatable ? 0 : rodataBase;
 
         try {
             sections_.clear();
@@ -117,29 +148,44 @@ public:
             stringTable_ = "\0";
             symbols_.clear();
 
-            addSection("", {}, 0, SHT_NULL, 0);
-            addSection(".text", textSectionData, baseAddress_, SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR);
-
+            addSection("", {}, 0, SHT_NULL, 0, 0);
             if (!dataSectionData.empty()) {
-                addSection(".data", dataSectionData, dataBase, SHT_PROGBITS, SHF_ALLOC | SHF_WRITE);
+                addSection(".data", dataSectionData, currentDataBase, SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 4);
             }
-
+            addSection(".text", textSectionData, textBase, SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 16);
             if (!bssSectionData.empty()) {
-                addSection(".bss", bssSectionData, bssBase, SHT_NOBITS, SHF_ALLOC | SHF_WRITE);
+                // For .bss, the vector is empty but the size is stored in the header
+                Section bss_section;
+                bss_section.name = ".bss";
+                bss_section.header.sh_type = SHT_NOBITS;
+                bss_section.header.sh_flags = SHF_ALLOC | SHF_WRITE;
+                bss_section.header.sh_addr = currentBssBase;
+                bss_section.header.sh_size = bssSectionData.size();
+                bss_section.header.sh_addralign = 16;
+                bss_section.header.sh_name = addToStringTable(shstringTable_, ".bss");
+                sections_.push_back(bss_section);
             }
-
             if (!rodataSectionData.empty()) {
-                addSection(".rodata", rodataSectionData, rodataBase, SHT_PROGBITS, SHF_ALLOC);
+                addSection(".rodata", rodataSectionData, currentRodataBase, SHT_PROGBITS, SHF_ALLOC, 4);
+            }
+            addSection(".note.GNU-stack", {}, 0, SHT_PROGBITS, 0, 1);
+            addSection(".shstrtab", {}, 0, SHT_STRTAB, 0, 1);
+            addSection(".symtab", {}, 0, SHT_SYMTAB, 0, 8);
+            addSection(".strtab", {}, 0, SHT_STRTAB, 0, 1);
+            if (generateRelocatable && !relocations.empty()) {
+                addSection(".rela.text", {}, 0, SHT_RELA, 0, 8);
             }
 
-            addSection(".shstrtab", {}, 0, SHT_STRTAB, 0);
-            addSection(".symtab", {}, 0, SHT_SYMTAB, 0);
-            addSection(".strtab", {}, 0, SHT_STRTAB, 0);
-
-            layoutSections();
-            createSymbolTable(symbols);
+            createSymbolTable(symbols, relocations, generateRelocatable);
+            if (generateRelocatable && !relocations.empty()) {
+                prepareRelocationSection(relocations);
+            }
             prepareTableSections();
-            createSegments();
+            layoutSections(generateRelocatable);
+
+            if (!generateRelocatable) {
+                createSegments();
+            }
 
             std::ofstream file(outputFile, std::ios::binary | std::ios::trunc);
             if (!file) {
@@ -147,10 +193,12 @@ public:
                 return false;
             }
 
-            writeElfHeader(file);
-            writeProgramHeaders(file);
-            writeSectionData(file);
+            writeElfHeader(file, generateRelocatable);
             writeSectionHeaders(file);
+            writeSectionData(file);
+            if (!generateRelocatable) {
+                writeProgramHeaders(file);
+            }
 
             file.close();
             return true;
@@ -162,15 +210,16 @@ public:
     }
 
     void addSection(const std::string& name, const std::vector<uint8_t>& data,
-                    uint64_t vaddr, uint32_t type, uint64_t flags)
+                    uint64_t vaddr, uint32_t type, uint64_t flags, uint64_t align = 1)
     {
         Section s;
+        memset(&s.header, 0, sizeof(s.header));
         s.name = name;
         s.data = data;
         s.header.sh_addr = vaddr;
         s.header.sh_type = type;
         s.header.sh_flags = flags;
-        s.header.sh_addralign = (type == SHT_NOBITS) ? 1 : pageSize_;
+        s.header.sh_addralign = align;
         s.header.sh_name = addToStringTable(shstringTable_, name);
         sections_.push_back(s);
     }
@@ -198,6 +247,8 @@ private:
         SectionHeader64 header;
     };
 
+    const Assembler& assembler_;
+    const std::string& inputFilename_;
     bool is64Bit_;
     uint64_t baseAddress_;
     uint64_t entryPoint_;
@@ -209,6 +260,20 @@ private:
     std::vector<Symbol64> symbols_;
     std::string stringTable_;
     std::string shstringTable_;
+    std::map<std::string, uint32_t> symbolIndexMap_;
+    uint64_t sectionHeadersOffset_ = 0;
+
+    uint64_t get_section_base(::Section section) const {
+        // This is a simplified lookup. A more robust implementation
+        // would handle custom sections properly.
+        switch(section) {
+            case ::Section::TEXT: return baseAddress_;
+            case ::Section::DATA: return baseAddress_ + 0x200000; // Placeholder
+            case ::Section::BSS: return baseAddress_ + 0x201000; // Placeholder
+            case ::Section::RODATA: return baseAddress_ + 0x202000; // Placeholder
+            default: return 0;
+        }
+    }
 
     uint32_t addToStringTable(std::string& table, const std::string& str) {
         if (str.empty()) return 0;
@@ -231,78 +296,164 @@ private:
         return 0;
     }
 
-    void layoutSections() {
-        uint64_t fileOffset = sizeof(ElfHeader64);
+    void prepareRelocationSection(const std::vector<RelocationEntry>& relocs) {
+        Section* rela_text = findSection(".rela.text");
+        if (!rela_text) return;
 
-        // Count loadable sections for program header calculation
-        size_t loadable_sections = 0;
-        for (const auto& section : sections_) {
-            if (section.header.sh_flags & SHF_ALLOC) {
-                loadable_sections++;
+        rela_text->header.sh_link = findSectionIndex(".symtab");
+        rela_text->header.sh_info = findSectionIndex(".text");
+        rela_text->header.sh_addralign = 8;
+        rela_text->header.sh_entsize = sizeof(Elf64_Rela);
+
+        for (const auto& reloc : relocs) {
+            Elf64_Rela r = {};
+            r.r_offset = reloc.offset;
+            r.r_addend = reloc.addend;
+
+            uint32_t sym_idx = symbolIndexMap_[reloc.symbolName];
+            std::cout << "Relocating " << reloc.symbolName << " with index " << sym_idx << std::endl;
+            uint32_t type = 0;
+            switch(reloc.type) {
+                case RelocationType::R_X86_64_PC32: type = R_X86_64_PC32; break;
+                case RelocationType::R_X86_64_PLT32: type = R_X86_64_PLT32; break;
+                case RelocationType::R_X86_64_64: type = R_X86_64_64; break;
             }
-        }
+            r.r_info = ELF64_R_INFO(sym_idx, type);
 
-        fileOffset += loadable_sections * sizeof(ProgramHeader64);
-        fileOffset = (fileOffset + pageSize_ - 1) & -pageSize_;
-
-        // Layout allocatable sections first
-        for (auto& section : sections_) {
-            if (section.header.sh_flags & SHF_ALLOC) {
-                section.header.sh_offset = fileOffset;
-                if (section.header.sh_type != SHT_NOBITS) {
-                    fileOffset += section.data.size();
-                }
-                fileOffset = (fileOffset + pageSize_ - 1) & -pageSize_;
-            }
-        }
-
-        // Layout non-allocatable sections
-        for (auto& section : sections_) {
-            if (!(section.header.sh_flags & SHF_ALLOC) && section.header.sh_type != SHT_NULL) {
-                section.header.sh_offset = fileOffset;
-                fileOffset += section.data.size();
-            }
+            std::vector<uint8_t> rela_bytes(sizeof(r));
+            memcpy(rela_bytes.data(), &r, sizeof(r));
+            rela_text->data.insert(rela_text->data.end(), rela_bytes.begin(), rela_bytes.end());
         }
     }
 
-    void createSymbolTable(const std::unordered_map<std::string, SymbolEntry>& symbols) {
-        // Add null symbol
-        addSymbol("", 0, 0, 0, 0, 0);
+    void layoutSections(bool generateRelocatable) {
+        uint64_t data_offset = sizeof(ElfHeader64) + sections_.size() * sizeof(SectionHeader64);
 
-        // Add section symbols
+        if (generateRelocatable) {
+            // Simple sequential layout for object files
+            for (auto& section : sections_) {
+                if (section.header.sh_type == SHT_NULL || section.header.sh_type == SHT_NOBITS) {
+                    section.header.sh_offset = 0;
+                    continue;
+                };
+
+                uint64_t align = section.header.sh_addralign;
+                if (align > 1) {
+                    data_offset = (data_offset + align - 1) & ~(align - 1);
+                }
+                section.header.sh_offset = data_offset;
+                data_offset += section.data.size();
+            }
+        } else {
+            // Layout for executables
+            size_t loadable_sections = 0;
+            for (const auto& section : sections_) {
+                if (section.header.sh_flags & SHF_ALLOC) {
+                    loadable_sections++;
+                }
+            }
+            data_offset += loadable_sections * sizeof(ProgramHeader64);
+
+            for (auto& section : sections_) {
+                if (section.header.sh_flags & SHF_ALLOC) {
+                    data_offset = (data_offset + pageSize_ - 1) & -pageSize_;
+                    section.header.sh_offset = data_offset;
+                    if (section.header.sh_type != SHT_NOBITS) {
+                        data_offset += section.data.size();
+                    }
+                }
+            }
+            // Non-allocatable sections are packed at the end
+            for (auto& section : sections_) {
+                if (!(section.header.sh_flags & SHF_ALLOC) && section.header.sh_type != SHT_NULL) {
+                    section.header.sh_offset = data_offset;
+                    data_offset += section.data.size();
+                }
+            }
+            sectionHeadersOffset_ = data_offset;
+        }
+    }
+
+    void createSymbolTable(const std::unordered_map<std::string, SymbolEntry>& symbols, const std::vector<RelocationEntry>& relocations, bool generateRelocatable) {
+        symbols_.clear();
+        stringTable_ = "\0";
+        symbolIndexMap_.clear();
+
+        std::vector<Symbol64> local_symbols;
+        std::vector<Symbol64> global_symbols;
+
+        // FILE symbol
+        Symbol64 file_sym;
+        file_sym.st_name = addToStringTable(stringTable_, inputFilename_);
+        file_sym.st_info = ELF64_ST_INFO(STB_LOCAL, STT_FILE);
+        file_sym.st_other = 0;
+        file_sym.st_shndx = SHN_ABS;
+        file_sym.st_value = 0;
+        file_sym.st_size = 0;
+        local_symbols.push_back(file_sym);
+
+        // SECTION symbols
         for (size_t i = 1; i < sections_.size(); ++i) {
-            if (sections_[i].header.sh_type != SHT_NULL) {
-                addSymbol(sections_[i].name, sections_[i].header.sh_addr, 0,
-                          ELF64_ST_INFO(STB_LOCAL, STT_NOTYPE), 0, i);
+            const auto& s = sections_[i];
+            if (s.header.sh_type != SHT_NULL) {
+                Symbol64 sec_sym;
+                sec_sym.st_name = 0; // Section symbols have no name in the string table
+                sec_sym.st_info = ELF64_ST_INFO(STB_LOCAL, STT_SECTION);
+                sec_sym.st_other = 0;
+                sec_sym.st_shndx = i;
+                sec_sym.st_value = 0;
+                sec_sym.st_size = 0;
+                local_symbols.push_back(sec_sym);
             }
         }
 
-        // Add user symbols
-        for (const auto& pair : symbols) {
+        // User-defined symbols
+        auto symbols_copy = symbols;
+        for (const auto& reloc : relocations) {
+            if (symbols_copy.find(reloc.symbolName) == symbols_copy.end()) {
+                symbols_copy[reloc.symbolName] = {reloc.symbolName, 0, 0, SymbolBinding::GLOBAL, SymbolType::NOTYPE, SymbolVisibility::DEFAULT, ::Section::NONE, false};
+            }
+        }
+        for (const auto& pair : symbols_copy) {
             const auto& sym = pair.second;
-            uint16_t shndx = 0;
-            uint8_t type = STT_NOTYPE;
+            Symbol64 new_sym;
+            new_sym.st_name = addToStringTable(stringTable_, sym.name);
+            new_sym.st_size = sym.size;
+            new_sym.st_other = 0;
 
-            // Determine section index and type
-            if (sym.section == ::Section::TEXT) {
-                shndx = findSectionIndex(".text");
-                type = (sym.type == "function") ? STT_FUNC : STT_NOTYPE;
-            } else if (sym.section == ::Section::DATA) {
-                shndx = findSectionIndex(".data");
-                type = STT_OBJECT;
-            } else if (sym.section == ::Section::BSS) {
-                shndx = findSectionIndex(".bss");
-                type = STT_OBJECT;
-            } else if (sym.section == ::Section::RODATA) {
-                shndx = findSectionIndex(".rodata");
-                type = STT_OBJECT;
+            if (!sym.isDefined) {
+                new_sym.st_shndx = SHN_UNDEF;
+                new_sym.st_value = 0;
             } else {
-                shndx = SHN_ABS;
-                type = STT_OBJECT;
+                new_sym.st_shndx = findSectionIndex(assembler_.getSectionName(sym.section));
+                new_sym.st_value = generateRelocatable ? sym.address - assembler_.getSectionBase(sym.section) : sym.address;
             }
 
-            uint8_t bind = sym.isGlobal ? STB_GLOBAL : STB_LOCAL;
-            addSymbol(sym.name, sym.address, 0, ELF64_ST_INFO(bind, type), 0, shndx);
+            uint8_t type = STT_NOTYPE;
+            if (sym.type == SymbolType::FUNCTION) type = STT_FUNC;
+            else if (sym.type == SymbolType::OBJECT) type = STT_OBJECT;
+
+            uint8_t bind = STB_LOCAL;
+            if (sym.binding == SymbolBinding::GLOBAL) bind = STB_GLOBAL;
+            else if (sym.binding == SymbolBinding::WEAK) bind = STB_GLOBAL; // Simplified
+
+            new_sym.st_info = ELF64_ST_INFO(bind, type);
+
+            if (bind == STB_LOCAL) {
+                local_symbols.push_back(new_sym);
+            } else {
+                global_symbols.push_back(new_sym);
+            }
+        }
+
+        // Add all symbols to the final list in the correct order
+        addSymbol("", 0, 0, 0, 0, 0); // NULL symbol first
+        for(const auto& s : local_symbols) symbols_.push_back(s);
+        for(const auto& s : global_symbols) symbols_.push_back(s);
+
+        // Create the index map for relocations
+        for(size_t i = 0; i < symbols_.size(); ++i) {
+            symbolIndexMap_[stringTable_.c_str() + symbols_[i].st_name] = i;
         }
     }
 
@@ -320,7 +471,16 @@ private:
         memcpy(symtab->data.data(), symbols_.data(), symtab->data.size());
         symtab->header.sh_size = symtab->data.size();
         symtab->header.sh_link = findSectionIndex(".strtab");
-        symtab->header.sh_info = 1;
+
+        // sh_info should be the index of the first non-local symbol
+        uint32_t first_global_idx = 0;
+        for(size_t i = 0; i < symbols_.size(); ++i) {
+            if (ELF64_ST_BIND(symbols_[i].st_info) != STB_LOCAL) {
+                first_global_idx = i;
+                break;
+            }
+        }
+        symtab->header.sh_info = first_global_idx;
         symtab->header.sh_entsize = sizeof(Symbol64);
     }
 
@@ -393,22 +553,22 @@ private:
         }
     }
 
-    void writeElfHeader(std::ofstream& file) {
+    void writeElfHeader(std::ofstream& file, bool generateRelocatable) {
         ElfHeader64 header = {};
         memcpy(header.e_ident, "\x7f""ELF", 4);
         header.e_ident[4] = 2;  // 64-bit
         header.e_ident[5] = 1;  // Little endian
         header.e_ident[6] = 1;  // ELF version
-        header.e_type = ET_EXEC;
+        header.e_type = generateRelocatable ? ET_REL : ET_EXEC;
         header.e_machine = EM_X86_64;
         header.e_version = 1;
-        header.e_entry = entryPoint_;
-        header.e_phoff = sizeof(ElfHeader64);
-        header.e_shoff = calculateSectionHeaderOffset();
+        header.e_entry = entryPoint_; // Already set to 0 for relocatable
+        header.e_phoff = generateRelocatable ? 0 : sizeof(ElfHeader64);
+        header.e_shoff = generateRelocatable ? sizeof(ElfHeader64) : sectionHeadersOffset_;
         header.e_flags = 0;
         header.e_ehsize = sizeof(ElfHeader64);
-        header.e_phentsize = sizeof(ProgramHeader64);
-        header.e_phnum = segments_.size();
+        header.e_phentsize = generateRelocatable ? 0 : sizeof(ProgramHeader64);
+        header.e_phnum = generateRelocatable ? 0 : segments_.size();
         header.e_shentsize = sizeof(SectionHeader64);
         header.e_shnum = sections_.size();
         header.e_shstrndx = findSectionIndex(".shstrtab");
@@ -434,54 +594,48 @@ private:
     }
 
     void writeSectionHeaders(std::ofstream& file) {
-        file.seekp(calculateSectionHeaderOffset());
+        file.seekp(sizeof(ElfHeader64));
         for (const auto& section : sections_) {
             auto header = section.header;
             header.sh_size = section.data.size();
             file.write(reinterpret_cast<const char*>(&header), sizeof(header));
         }
     }
-
-    uint64_t calculateSectionHeaderOffset() {
-        uint64_t max_offset = 0;
-        for (const auto& sec : sections_) {
-            if (sec.header.sh_type != SHT_NOBITS) {
-                max_offset = std::max(max_offset, sec.header.sh_offset + sec.data.size());
-            }
-        }
-        return (max_offset + 15) & -16;
-    }
 };
 
-ElfGenerator::ElfGenerator(bool is64Bit, uint64_t baseAddress)
-    : pImpl(std::make_unique<Impl>(is64Bit, baseAddress)) {}
+ElfGenerator::ElfGenerator(const Assembler& assembler, const std::string& inputFilename, bool is64Bit, uint64_t baseAddress)
+    : pImpl(std::make_unique<Impl>(assembler, inputFilename, is64Bit, baseAddress)) {}
 
 ElfGenerator::~ElfGenerator() = default;
 
 bool ElfGenerator::generateElf(const std::vector<uint8_t> &textSection,
                                const std::string &outputFile,
                                const std::unordered_map<std::string, SymbolEntry> &symbols,
+                               const std::vector<RelocationEntry> &relocations,
                                const std::vector<uint8_t> &dataSection,
                                uint64_t entryPoint,
-                               uint64_t dataBase)
+                               uint64_t dataBase,
+                               bool generateRelocatable)
 {
-    return pImpl->generate(outputFile, textSection, dataSection, symbols, entryPoint, dataBase);
+    return pImpl->generate(outputFile, textSection, dataSection, symbols, relocations, entryPoint, dataBase, {}, {}, 0, 0, generateRelocatable);
 }
 
 // New method for enhanced section support
 bool ElfGenerator::generateElfWithAllSections(const std::vector<uint8_t> &textSection,
                                               const std::string &outputFile,
                                               const std::unordered_map<std::string, SymbolEntry> &symbols,
+                                              const std::vector<RelocationEntry> &relocations,
                                               const std::vector<uint8_t> &dataSection,
                                               const std::vector<uint8_t> &bssSection,
                                               const std::vector<uint8_t> &rodataSection,
                                               uint64_t entryPoint,
                                               uint64_t dataBase,
                                               uint64_t bssBase,
-                                              uint64_t rodataBase)
+                                              uint64_t rodataBase,
+                                              bool generateRelocatable)
 {
-    return pImpl->generate(outputFile, textSection, dataSection, symbols, entryPoint,
-                           dataBase, bssSection, rodataSection, bssBase, rodataBase);
+    return pImpl->generate(outputFile, textSection, dataSection, symbols, relocations, entryPoint,
+                           dataBase, bssSection, rodataSection, bssBase, rodataBase, generateRelocatable);
 }
 
 void ElfGenerator::addSection(const std::string& name, const std::vector<uint8_t>& data,

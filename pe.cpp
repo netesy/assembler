@@ -439,7 +439,12 @@ private:
 
             coffSym.Value = sym.address;
             coffSym.Type = 0x20; // Function
-            coffSym.StorageClass = sym.isGlobal ? 2 : 3;
+
+            switch(sym.binding) {
+                case SymbolBinding::LOCAL: coffSym.StorageClass = 3; break; // C_STAT
+                case SymbolBinding::GLOBAL: coffSym.StorageClass = 2; break; // C_EXT
+                case SymbolBinding::WEAK: coffSym.StorageClass = 2; break; // C_EXT, with special handling
+            }
 
             Section* text = findSection(".text");
             Section* data = findSection(".data");

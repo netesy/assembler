@@ -29,6 +29,13 @@ The final stage of development focused on features required for more realistic a
 - **Atomic Operations:** Support for the `LOCK` prefix was added, enabling atomic read-modify-write operations on memory (e.g., `lock add [counter], 1`). The assembler validates its use against the list of legally lockable instructions.
 - **Heap Management:** Support for the `brk` syscall was researched and verified, allowing programs to perform basic heap memory allocation.
 
+## Stage 4: Relocatable Object File Generation
+
+To support modern development practices and allow for separate compilation, the assembler was enhanced to generate standard relocatable object files (`.o`).
+- **Object File Generation:** A `-c` command-line flag was added to instruct the assembler to produce a relocatable `ET_REL` ELF file instead of a final executable.
+- **Symbol Table Refactoring:** The symbol handling system was completely rewritten to support `LOCAL`, `GLOBAL`, and `WEAK` bindings, as well as symbol visibility controls. The assembler now correctly parses directives like `.global`, `.local`, and `.extern`.
+- **ELF Generator Enhancements:** The ELF generator was updated to correctly produce relocatable object files, including the creation of a valid symbol table and section headers. The layout logic was also improved to match the output of standard tools like `nasm`.
+
 ## Final Status
 
-The project is now a working, if simplified, assembler and toolchain for a useful subset of the x86-64 instruction set. It can produce runnable Linux ELF executables from assembly source that includes function calls, conditional logic, stack operations, memory access, and atomic operations.
+The project is now a working, if simplified, assembler and toolchain for a useful subset of the x86-64 instruction set. It can produce runnable Linux ELF executables or linkable object files from assembly source that includes function calls, conditional logic, stack operations, memory access, and atomic operations.
