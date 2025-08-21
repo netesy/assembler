@@ -12,8 +12,9 @@ if ! command -v cmake &> /dev/null; then
     exit 1
 fi
 
-# Create build directory if it doesn't exist
+# Create directories
 mkdir -p build
+mkdir -p bin
 
 # Configure the project
 echo "Configuring project..."
@@ -38,5 +39,5 @@ cd ..
 
 echo ""
 echo "CMake build completed successfully!"
-echo "Executable created: build/assembler"
+echo "Executable created: bin/assembler"
 echo ""
