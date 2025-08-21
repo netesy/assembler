@@ -16,11 +16,6 @@ struct WinApiImport {
     std::string function;
 };
 
-struct WinApiImport {
-    std::string dll;
-    std::string function;
-};
-
 enum class Section {
     NONE,
     TEXT,
@@ -148,6 +143,7 @@ public:
     std::string getSectionName(Section s) const;
     const std::vector<uint8_t> &getDataSection() const;
     const std::vector<uint8_t> &getBssSection() const;
+    uint64_t getBssSize() const;
     const std::vector<uint8_t> &getRodataSection() const;
     const std::unordered_map<std::string, std::vector<uint8_t>> &getCustomSections() const;
     uint64_t getEntryPoint() const;
@@ -206,6 +202,7 @@ private:
     std::vector<uint8_t> textSection;
     std::vector<uint8_t> dataSection;
     std::vector<uint8_t> bssSection;
+    uint64_t bssSize = 0;
     std::vector<uint8_t> rodataSection;
     std::unordered_map<std::string, std::vector<uint8_t>> customSections;
     std::unordered_map<std::string, SectionInfo> sectionInfoMap;
