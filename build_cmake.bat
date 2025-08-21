@@ -10,8 +10,9 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-REM Create build directory if it doesn't exist
+REM Create directories
 if not exist "build" mkdir build
+if not exist "bin" mkdir bin
 
 REM Configure the project
 echo Configuring project...
@@ -38,6 +39,6 @@ cd ..
 
 echo.
 echo CMake build completed successfully!
-echo Executable created: build\assembler.exe
+echo Executable created: bin\assembler.exe
 echo.
 pause

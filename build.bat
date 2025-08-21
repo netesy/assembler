@@ -11,16 +11,16 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-REM Create build directory if it doesn't exist
-if not exist "build" mkdir build
+REM Create bin directory if it doesn't exist
+if not exist "bin" mkdir bin
 
 REM Clean previous build
-if exist "build\assembler.exe" del "build\assembler.exe"
-if exist "build\test_assembler.exe" del "build\test_assembler.exe"
+if exist "bin\assembler.exe" del "bin\assembler.exe"
+if exist "bin\test_assembler.exe" del "bin\test_assembler.exe"
 
 REM Compile the main assembler executable
 echo Compiling main assembler...
-g++ -std=c++17 -Wall -Wextra -O2 -o build\assembler.exe main.cpp assembler.cpp elf.cpp pe.cpp
+g++ -std=c++17 -Wall -Wextra -O2 -o bin\assembler.exe main.cpp assembler.cpp elf.cpp pe.cpp
 if %ERRORLEVEL% NEQ 0 (
     echo Error: Failed to compile main assembler
     pause
@@ -29,7 +29,7 @@ if %ERRORLEVEL% NEQ 0 (
 
 REM Compile the test executable
 echo Compiling test assembler...
-g++ -std=c++17 -Wall -Wextra -O2 -o build\test_assembler.exe test_assembler.cpp assembler.cpp elf.cpp pe.cpp
+g++ -std=c++17 -Wall -Wextra -O2 -o bin\test_assembler.exe test_assembler.cpp assembler.cpp elf.cpp pe.cpp
 if %ERRORLEVEL% NEQ 0 (
     echo Error: Failed to compile test assembler
     pause
@@ -39,37 +39,37 @@ if %ERRORLEVEL% NEQ 0 (
 echo.
 echo Build completed successfully!
 echo Executables created:
-echo   - build\assembler.exe (main assembler)
-echo   - build\test_assembler.exe (test program)
+echo   - bin\assembler.exe (main assembler)
+echo   - bin\test_assembler.exe (test program)
 echo.
-echo To run the test: build\test_assembler.exe
-echo To run the assembler: build\assembler.exe
+echo To run the test: bin\test_assembler.exe
+echo To run the assembler: bin\assembler.exe
 echo.
 
 echo Running end-to-end test...
 
 echo Assembling test.asm into an ELF executable...
-build\assembler.exe test.asm --format elf -o build\test.elf
+bin\assembler.exe test.asm --format elf -o bin\test.elf
 if %ERRORLEVEL% NEQ 0 (
     echo Failed to assemble test.asm to ELF.
     pause
     exit /b 1
 )
-echo Successfully created build\test.elf
+echo Successfully created bin\test.elf
 echo.
 
 echo Assembling test.asm into a PE executable...
-build\assembler.exe test.asm --format pe -o build\test.exe
+bin\assembler.exe test.asm --format pe -o bin\test.exe
 if %ERRORLEVEL% NEQ 0 (
     echo Failed to assemble test.asm to PE.
     pause
     exit /b 1
 )
-echo Successfully created build\test.exe
+echo Successfully created bin\test.exe
 echo.
 
-echo Running generated PE executable build\test.exe...
-build\test.exe
+echo Running generated PE executable bin\test.exe...
+bin\test.exe
 if %ERRORLEVEL% NEQ 0 (
     echo Generated PE executable failed to run or returned an error.
 

@@ -36,6 +36,14 @@ To support modern development practices and allow for separate compilation, the 
 - **Symbol Table Refactoring:** The symbol handling system was completely rewritten to support `LOCAL`, `GLOBAL`, and `WEAK` bindings, as well as symbol visibility controls. The assembler now correctly parses directives like `.global`, `.local`, and `.extern`.
 - **ELF Generator Enhancements:** The ELF generator was updated to correctly produce relocatable object files, including the creation of a valid symbol table and section headers. The layout logic was also improved to match the output of standard tools like `nasm`.
 
+## Stage 5: Windows PE Support and Cross-Platform Enhancements
+
+This stage focused on adding support for generating Windows PE executables and improving the cross-platform capabilities of the toolchain.
+- **PE Generator Fixes:** The PE generator, which was previously non-functional, was significantly overhauled. This included fixing the handling of the `.bss` section, correcting section padding, and ensuring the overall structure of the generated PE file is valid.
+- **Cross-Platform Syscall Translation:** The assembler was enhanced to automatically translate Linux `syscall` instructions into the equivalent Windows API calls when targeting the PE format. This allows the same assembly source code to be used to generate executables for both Linux and Windows.
+- **Dual-Format Default:** The assembler's default behavior was changed to generate both ELF and PE executables if no specific format is specified. The `--format` flag can be used to target a single platform.
+- **Cross-Platform Build:** The ELF generator was made platform-neutral by removing Linux-specific headers, allowing it to be compiled and run on Windows.
+
 ## Final Status
 
-The project is now a working, if simplified, assembler and toolchain for a useful subset of the x86-64 instruction set. It can produce runnable Linux ELF executables or linkable object files from assembly source that includes function calls, conditional logic, stack operations, memory access, and atomic operations.
+The project is now a working, if simplified, assembler and toolchain for a useful subset of the x86-64 instruction set. It can produce runnable executables for both **Linux (ELF)** and **Windows (PE)**, as well as linkable object files. It supports cross-compilation of Linux-style assembly code to Windows executables.
