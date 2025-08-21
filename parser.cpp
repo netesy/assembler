@@ -89,15 +89,36 @@ Operand Parser::parse_operand(const std::string& op_str) {
 void Parser::handle_data_directive(Instruction& instr, const std::string& directive, const std::string& data_str) {
     std::vector<uint8_t> data_bytes;
 
-    if (directive == ".byte" || directive == ".db") {
+    if (directive == ".db") {
         std::istringstream iss(data_str);
-        std::string value;
-        while (std::getline(iss, value, ',')) {
-            value.erase(0, value.find_first_not_of(" \t"));
-            value.erase(value.find_last_not_of(" \t") + 1);
-            data_bytes.push_back(static_cast<uint8_t>(std::stoll(value, nullptr, 0)));
+        std::string item;
+        while(std::getline(iss, item, ',')) {
+            item.erase(0, item.find_first_not_of(" \t"));
+            item.erase(item.find_last_not_of(" \t") + 1);
+            if (item.front() == '"' && item.back() == '"') {
+                std::string s = item.substr(1, item.length() - 2);
+                std::string unescaped;
+                for (size_t i = 0; i < s.length(); ++i) {
+                    if (s[i] == '\\' && i + 1 < s.length()) {
+                        switch (s[i+1]) {
+                            case 'n': unescaped += '\n'; i++; break;
+                            case 'r': unescaped += '\r'; i++; break;
+                            case 't': unescaped += '\t'; i++; break;
+                            case '0': unescaped += '\0'; i++; break;
+                            default: unescaped += s[i];
+                        }
+                    } else {
+                        unescaped += s[i];
+                    }
+                }
+                for (char c : unescaped) {
+                    data_bytes.push_back(c);
+                }
+            } else {
+                data_bytes.push_back(static_cast<uint8_t>(std::stoll(item, nullptr, 0)));
+            }
         }
-    } else if (directive == ".word" || directive == ".dw") {
+    } else if (directive == ".dw") {
         std::istringstream iss(data_str);
         std::string value;
         while (std::getline(iss, value, ',')) {
@@ -152,6 +173,26 @@ void Parser::handle_data_directive(Instruction& instr, const std::string& direct
     } else if (directive == ".space") {
         size_t space_size = std::stoull(data_str);
         data_bytes.resize(space_size, 0);
+    } else if (directive == ".resb") {
+        size_t space_size = std::stoull(data_str);
+        data_bytes.resize(space_size, 0);
+    } else if (directive == ".times") {
+        std::istringstream iss(data_str);
+        size_t count;
+        std::string directive_str;
+        iss >> count >> directive_str;
+        std::string data_val;
+        std::getline(iss, data_val);
+        data_val.erase(0, data_val.find_first_not_of(" \t"));
+
+        std::vector<uint8_t> single_item_bytes;
+        if (directive_str == "db") {
+            single_item_bytes.push_back(static_cast<uint8_t>(std::stoll(data_val, nullptr, 0)));
+        } // Add other directives as needed
+
+        for (size_t i = 0; i < count; ++i) {
+            data_bytes.insert(data_bytes.end(), single_item_bytes.begin(), single_item_bytes.end());
+        }
     }
     instr.data = data_bytes;
 }
