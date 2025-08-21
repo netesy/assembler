@@ -208,14 +208,14 @@ public:
     };
 
     bool generateExecutable(const std::string& outputFile,
-                            const std::unordered_map<std::string, SymbolEntry>& symbols) {
+                            Assembler& assembler) {
         try {
             // Ensure .rdata section exists if we have imports
             if (!imports_.empty() && !findSection(".rdata")) {
                 addSection(".rdata", {}, 0, IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ);
             }
 
-            buildSymbolTable(symbols);
+            buildSymbolTable(assembler.getSymbols());
 
             // Two-pass layout to solve chicken-and-egg problem with import directory size and RVA
             layoutSections(); // First pass to get preliminary RVAs
@@ -238,6 +238,170 @@ public:
             return true;
         } catch (const std::exception& e) {
             lastError_ = "Error generating PE file: " + std::string(e.what());
+            return false;
+        }
+    }
+
+    bool generateObjectFile(const std::string& outputFile, Assembler& assembler) {
+        try {
+            std::vector<std::pair<std::string, const std::vector<uint8_t>*>> sections;
+            sections.push_back({".text", &assembler.getTextSection()});
+            if (!assembler.getDataSection().empty()) sections.push_back({".data", &assembler.getDataSection()});
+            if (assembler.getBssSize() > 0) sections.push_back({".bss", nullptr});
+            if (!assembler.getRodataSection().empty()) sections.push_back({".rdata", &assembler.getRodataSection()});
+
+            std::vector<CoffSymbol> symbols;
+            std::string stringTable(4, '\0');
+            std::map<std::string, uint32_t> symbolIndexMap;
+
+            // .file symbol
+            CoffSymbol fileSymbol = {};
+            strncpy(fileSymbol.Name.ShortName, ".file", 8);
+            fileSymbol.SectionNumber = IMAGE_SYM_DEBUG;
+            fileSymbol.StorageClass = 103; // IMAGE_SYM_CLASS_FILE
+            fileSymbol.NumberOfAuxSymbols = 1;
+            symbols.push_back(fileSymbol);
+            CoffSymbol fileAuxSymbol = {};
+            // For simplicity, using a placeholder filename. A real implementation would get this from the assembler.
+            strncpy(reinterpret_cast<char*>(&fileAuxSymbol), "source.asm", sizeof(CoffSymbol));
+            symbols.push_back(fileAuxSymbol);
+
+
+            // Section symbols
+            for (size_t i = 0; i < sections.size(); ++i) {
+                CoffSymbol secSymbol = {};
+                strncpy(secSymbol.Name.ShortName, sections[i].first.c_str(), 8);
+                secSymbol.Value = 0;
+                secSymbol.SectionNumber = i + 1;
+                secSymbol.Type = 0;
+                secSymbol.StorageClass = IMAGE_SYM_CLASS_STATIC;
+                secSymbol.NumberOfAuxSymbols = 1;
+                symbols.push_back(secSymbol);
+
+                CoffSymbol auxSym = {};
+                const auto& data_ptr = sections[i].second;
+                if (data_ptr) {
+                    reinterpret_cast<uint32_t*>(&auxSym)[0] = data_ptr->size(); // Length
+                }
+                reinterpret_cast<uint16_t*>(&auxSym)[2] = 0; // NumberOfRelocations (will be patched later)
+                reinterpret_cast<uint16_t*>(&auxSym)[3] = 0; // NumberOfLinenumbers
+                symbols.push_back(auxSym);
+            }
+
+            // User symbols
+            for (const auto& pair : assembler.getSymbols()) {
+                const auto& sym = pair.second;
+                symbolIndexMap[sym.name] = symbols.size();
+                CoffSymbol s = {};
+                if (sym.name.length() > 8) {
+                    s.Name.LongName.Zeros = 0;
+                    s.Name.LongName.Offset = stringTable.size();
+                    stringTable.append(sym.name).append(1, '\0');
+                } else {
+                    strncpy(s.Name.ShortName, sym.name.c_str(), 8);
+                }
+                s.Value = sym.address;
+                s.Type = (sym.type == SymbolType::FUNCTION) ? 0x20 : 0;
+                if (sym.isDefined) {
+                    s.StorageClass = (sym.binding == SymbolBinding::GLOBAL) ? IMAGE_SYM_CLASS_EXTERNAL : IMAGE_SYM_CLASS_STATIC;
+                    // Find section index
+                    for (size_t i = 0; i < sections.size(); ++i) {
+                         if (sections[i].first == assembler.getSectionName(sym.section)) {
+                             s.SectionNumber = i + 1;
+                             break;
+                         }
+                    }
+                } else {
+                    s.SectionNumber = 0; // UNDEFINED
+                    s.StorageClass = IMAGE_SYM_CLASS_EXTERNAL;
+                }
+                symbols.push_back(s);
+            }
+
+            // Relocations
+            std::vector<std::vector<CoffRelocation>> relocs_per_section(sections.size());
+            for (const auto& reloc : assembler.getRelocations()) {
+                CoffRelocation r = {};
+                r.VirtualAddress = reloc.offset;
+                r.SymbolTableIndex = symbolIndexMap.at(reloc.symbolName);
+                r.Type = IMAGE_REL_AMD64_REL32;
+                for (size_t i = 0; i < sections.size(); ++i) {
+                    if (sections[i].first == assembler.getSectionName(reloc.section)) {
+                        relocs_per_section[i].push_back(r);
+                        break;
+                    }
+                }
+            }
+
+            // Layout
+            uint32_t currentOffset = sizeof(CoffHeader) + sections.size() * sizeof(CoffSectionHeader);
+            std::vector<CoffSectionHeader> sectionHeaders(sections.size());
+            for (size_t i = 0; i < sections.size(); ++i) {
+                strncpy(sectionHeaders[i].Name, sections[i].first.c_str(), 8);
+                const auto& data_ptr = sections[i].second;
+                if (data_ptr) {
+                    sectionHeaders[i].SizeOfRawData = data_ptr->size();
+                    sectionHeaders[i].PointerToRawData = currentOffset;
+                    currentOffset += data_ptr->size();
+                }
+            }
+
+            uint32_t relocsOffset = currentOffset;
+            for (size_t i = 0; i < sections.size(); ++i) {
+                if (!relocs_per_section[i].empty()) {
+                    sectionHeaders[i].PointerToRelocations = relocsOffset;
+                    sectionHeaders[i].NumberOfRelocations = relocs_per_section[i].size();
+                    relocsOffset += relocs_per_section[i].size() * sizeof(CoffRelocation);
+                }
+            }
+
+            uint32_t symbolTableOffset = relocsOffset;
+
+            // Write
+            std::ofstream file(outputFile, std::ios::binary);
+            if (!file) {
+                lastError_ = "Cannot open output file";
+                return false;
+            }
+
+            CoffHeader header = {};
+            header.Machine = IMAGE_FILE_MACHINE_AMD64;
+            header.NumberOfSections = sections.size();
+            header.TimeDateStamp = time(nullptr);
+            header.PointerToSymbolTable = symbolTableOffset;
+            header.NumberOfSymbols = symbols.size();
+            header.Characteristics = IMAGE_FILE_LARGE_ADDRESS_AWARE;
+            file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+
+            file.write(reinterpret_cast<const char*>(sectionHeaders.data()), sectionHeaders.size() * sizeof(CoffSectionHeader));
+
+            for (size_t i = 0; i < sections.size(); ++i) {
+                const auto& data_ptr = sections[i].second;
+                if (data_ptr && !data_ptr->empty()) {
+                    file.seekp(sectionHeaders[i].PointerToRawData);
+                    file.write(reinterpret_cast<const char*>(data_ptr->data()), data_ptr->size());
+                }
+            }
+
+            for (size_t i = 0; i < relocs_per_section.size(); ++i) {
+                if (!relocs_per_section[i].empty()) {
+                    file.seekp(sectionHeaders[i].PointerToRelocations);
+                    file.write(reinterpret_cast<const char*>(relocs_per_section[i].data()), relocs_per_section[i].size() * sizeof(CoffRelocation));
+                }
+            }
+
+            file.seekp(symbolTableOffset);
+            file.write(reinterpret_cast<const char*>(symbols.data()), symbols.size() * sizeof(CoffSymbol));
+
+            uint32_t stringTableSize = stringTable.size();
+            memcpy(&stringTable[0], &stringTableSize, 4);
+            file.write(stringTable.c_str(), stringTableSize);
+
+            file.close();
+            return true;
+
+        } catch (const std::exception& e) {
+            lastError_ = "Error generating COFF object file: " + std::string(e.what());
             return false;
         }
     }
@@ -613,8 +777,13 @@ PEGenerator::PEGenerator(bool is64Bit, uint64_t baseAddr)
 PEGenerator::~PEGenerator() = default;
 
 bool PEGenerator::generateExecutable(const std::string& outputFile,
-                                     const std::unordered_map<std::string, SymbolEntry>& symbols) {
-    return pImpl_->generateExecutable(outputFile, symbols);
+                                     Assembler& assembler) {
+    return pImpl_->generateExecutable(outputFile, assembler);
+}
+
+bool PEGenerator::generateObjectFile(const std::string& outputFile,
+                                     Assembler& assembler) {
+    return pImpl_->generateObjectFile(outputFile, assembler);
 }
 
 void PEGenerator::addSection(const std::string& name, const std::vector<uint8_t>& data,

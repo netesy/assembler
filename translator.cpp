@@ -6,18 +6,6 @@
 
 Translator::Translator(Assembler& assembler) : assembler_(assembler) {}
 
-void Translator::print_instructions(const std::string& title, const std::vector<Instruction>& instructions, int start, int end) {
-    std::cout << "--- " << title << " ---\n";
-    for (int i = start; i < end; ++i) {
-        std::cout << instructions[i].mnemonic;
-        for (const auto& op : instructions[i].operands) {
-            std::cout << " " << op.value;
-        }
-        std::cout << "\n";
-    }
-    std::cout << "---------------------\n";
-}
-
 void Translator::translate_syscalls_to_winapi(std::vector<Instruction>& instructions) {
     if (assembler_.target_format_ != "pe") {
         return;
@@ -47,19 +35,25 @@ void Translator::translate_syscalls_to_winapi(std::vector<Instruction>& instruct
             if (instructions[j].mnemonic == "mov" && instructions[j].operands.size() == 2) {
                 const auto& reg = instructions[j].operands[0].value;
                 if (reg == "rax" || reg == "eax") {
-                    if (instructions[j].operands[1].type == OperandType::IMMEDIATE) {
+                    if (rax_idx == -1 && instructions[j].operands[1].type == OperandType::IMMEDIATE) {
                         syscall_num = std::stoll(instructions[j].operands[1].value);
                         rax_idx = j;
                     }
                 } else if (reg == "rdi" || reg == "edi") {
-                    rdi_idx = j;
-                    exit_code_op = instructions[j].operands[1];
+                    if (rdi_idx == -1) {
+                        rdi_idx = j;
+                        exit_code_op = instructions[j].operands[1];
+                    }
                 } else if (reg == "rsi" || reg == "esi") {
-                    rsi_idx = j;
-                    buf_op = instructions[j].operands[1];
+                    if (rsi_idx == -1) {
+                        rsi_idx = j;
+                        buf_op = instructions[j].operands[1];
+                    }
                 } else if (reg == "rdx" || reg == "edx") {
-                    rdx_idx = j;
-                    len_op = instructions[j].operands[1];
+                    if (rdx_idx == -1) {
+                        rdx_idx = j;
+                        len_op = instructions[j].operands[1];
+                    }
                 }
             }
         }
@@ -67,23 +61,36 @@ void Translator::translate_syscalls_to_winapi(std::vector<Instruction>& instruct
         if (rax_idx == -1) continue;
 
         if (syscall_num == 60) { // sys_exit
+            std::vector<int> to_erase = {static_cast<int>(i), rax_idx};
             if (rdi_idx != -1) {
-                 instructions[rax_idx].operands[0].value = "ecx";
-                 instructions[rax_idx].operands[1] = exit_code_op;
-                 instructions.erase(instructions.begin() + rdi_idx);
-            } else {
-                instructions[rax_idx].operands[0].value = "ecx";
-                instructions[rax_idx].operands[1].value = "0";
+                to_erase.push_back(rdi_idx);
             }
-            instructions[i].mnemonic = "call";
-            instructions[i].operands.clear();
-            instructions[i].operands.push_back({OperandType::LABEL, "ExitProcess"});
+            std::sort(to_erase.rbegin(), to_erase.rend());
+
+            int insert_pos = to_erase.back();
+            for (int idx : to_erase) {
+                instructions.erase(instructions.begin() + idx);
+            }
+
+            auto make_instr = [](const std::string& m, const std::vector<Operand>& ops){
+                Instruction instr;
+                instr.mnemonic = m;
+                instr.operands = ops;
+                return instr;
+            };
+
+            std::vector<Instruction> new_block;
+            Operand exit_op = (rdi_idx != -1) ? exit_code_op : Operand{OperandType::IMMEDIATE, "0"};
+            new_block.push_back(make_instr("mov", {{OperandType::REGISTER, "ecx"}, exit_op}));
+            new_block.push_back(make_instr("call", {{OperandType::LABEL, "ExitProcess"}}));
+
+            instructions.insert(instructions.begin() + insert_pos, new_block.begin(), new_block.end());
             assembler_.add_winapi_import("kernel32.dll", "ExitProcess");
+
+            i = insert_pos + new_block.size() - 1;
 
         } else if (syscall_num == 1) { // sys_write
             if (rsi_idx == -1 || rdx_idx == -1) continue;
-
-            print_instructions("Original", instructions, block_start, i + 1);
 
             std::vector<int> to_erase = {static_cast<int>(i), rax_idx, rsi_idx, rdx_idx};
             if (rdi_idx != -1) to_erase.push_back(rdi_idx);
@@ -114,8 +121,6 @@ void Translator::translate_syscalls_to_winapi(std::vector<Instruction>& instruct
             new_block.push_back(make_instr("call", {{OperandType::LABEL, "WriteFile"}}));
             new_block.push_back(make_instr("add", {{OperandType::REGISTER, "rsp"}, {OperandType::IMMEDIATE, "40"}}));
 
-            print_instructions("Translated", new_block, 0, new_block.size());
-
             instructions.insert(instructions.begin() + insert_pos, new_block.begin(), new_block.end());
             assembler_.add_winapi_import("kernel32.dll", "WriteFile");
             assembler_.add_winapi_import("kernel32.dll", "GetStdHandle");
@@ -123,8 +128,6 @@ void Translator::translate_syscalls_to_winapi(std::vector<Instruction>& instruct
             i = insert_pos + new_block.size() -1;
         } else if (syscall_num == 2) { // sys_open
             if (rdi_idx == -1) continue;
-
-            print_instructions("Original", instructions, block_start, i + 1);
 
             std::vector<int> to_erase = {static_cast<int>(i), rax_idx, rdi_idx};
             if (rsi_idx != -1) to_erase.push_back(rsi_idx);
@@ -163,16 +166,12 @@ void Translator::translate_syscalls_to_winapi(std::vector<Instruction>& instruct
             new_block.push_back(make_instr("call", {{OperandType::LABEL, "CreateFileA"}}));
             new_block.push_back(make_instr("add", {{OperandType::REGISTER, "rsp"}, {OperandType::IMMEDIATE, "56"}}));
 
-            print_instructions("Translated", new_block, 0, new_block.size());
-
             instructions.insert(instructions.begin() + insert_pos, new_block.begin(), new_block.end());
             assembler_.add_winapi_import("kernel32.dll", "CreateFileA");
 
             i = insert_pos + new_block.size() - 1;
         } else if (syscall_num == 0) { // sys_read
             if (rdi_idx == -1 || rsi_idx == -1 || rdx_idx == -1) continue;
-
-            print_instructions("Original", instructions, block_start, i + 1);
 
             std::vector<int> to_erase = {static_cast<int>(i), rax_idx, rdi_idx, rsi_idx, rdx_idx};
             std::sort(to_erase.rbegin(), to_erase.rend());
@@ -206,16 +205,12 @@ void Translator::translate_syscalls_to_winapi(std::vector<Instruction>& instruct
             new_block.push_back(make_instr("call", {{OperandType::LABEL, "ReadFile"}}));
             new_block.push_back(make_instr("add", {{OperandType::REGISTER, "rsp"}, {OperandType::IMMEDIATE, "48"}}));
 
-            print_instructions("Translated", new_block, 0, new_block.size());
-
             instructions.insert(instructions.begin() + insert_pos, new_block.begin(), new_block.end());
             assembler_.add_winapi_import("kernel32.dll", "ReadFile");
 
             i = insert_pos + new_block.size() - 1;
         } else if (syscall_num == 3) { // sys_close
             if (rdi_idx == -1) continue;
-
-            print_instructions("Original", instructions, block_start, i + 1);
 
             std::vector<int> to_erase = {static_cast<int>(i), rax_idx, rdi_idx};
             std::sort(to_erase.rbegin(), to_erase.rend());
@@ -239,16 +234,12 @@ void Translator::translate_syscalls_to_winapi(std::vector<Instruction>& instruct
             new_block.push_back(make_instr("mov", {{OperandType::REGISTER, "rcx"}, instructions[rdi_idx].operands[1]}));
             new_block.push_back(make_instr("call", {{OperandType::LABEL, "CloseHandle"}}));
 
-            print_instructions("Translated", new_block, 0, new_block.size());
-
             instructions.insert(instructions.begin() + insert_pos, new_block.begin(), new_block.end());
             assembler_.add_winapi_import("kernel32.dll", "CloseHandle");
 
             i = insert_pos + new_block.size() - 1;
         } else if (syscall_num == 9) { // sys_mmap
             if (rdi_idx == -1 || rsi_idx == -1 || rdx_idx == -1) continue;
-
-            print_instructions("Original", instructions, block_start, i + 1);
 
             std::vector<int> to_erase = {static_cast<int>(i), rax_idx, rdi_idx, rsi_idx, rdx_idx};
             if (instructions[i-1].mnemonic == "mov" && instructions[i-1].operands[0].value == "r10") {
@@ -280,8 +271,6 @@ void Translator::translate_syscalls_to_winapi(std::vector<Instruction>& instruct
             new_block.push_back(make_instr("mov", {{OperandType::REGISTER, "r8"}, {OperandType::IMMEDIATE, "0x3000"}})); // MEM_COMMIT | MEM_RESERVE
             new_block.push_back(make_instr("mov", {{OperandType::REGISTER, "r9"}, {OperandType::IMMEDIATE, "4"}})); // PAGE_READWRITE
             new_block.push_back(make_instr("call", {{OperandType::LABEL, "VirtualAlloc"}}));
-
-            print_instructions("Translated", new_block, 0, new_block.size());
 
             instructions.insert(instructions.begin() + insert_pos, new_block.begin(), new_block.end());
             assembler_.add_winapi_import("kernel32.dll", "VirtualAlloc");

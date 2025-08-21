@@ -52,10 +52,7 @@ bool generateElf(Assembler& assembler, const std::string& inputFilename, const s
 }
 
 // Function to generate PE output
-bool generatePe(Assembler& assembler, const std::string& outputFilename) {
-    const auto& symbols = assembler.getSymbols();
-    PEGenerator peGen(true); // Assuming 64-bit
-
+bool generatePe(PEGenerator& peGen, Assembler& assembler, const std::string& outputFilename) {
     for (const auto& imp : assembler.getWinApiImports()) {
         peGen.addImport(imp.dll, imp.function);
     }
@@ -141,7 +138,7 @@ int main(int argc, char* argv[]) {
     if (format == "default") {
         cout << "No format specified, generating for both ELF and PE..." << endl;
 
-        Assembler elf_assembler("elf");
+        Assembler elf_assembler("elf", generateRelocatable ? 0 : 0x400000, generateRelocatable ? 0 : 0x600000);
         if (!elf_assembler.assemble(asmCodeFromFile, outputFilename)) {
             std::cerr << "Assembly for ELF failed" << std::endl;
             return 1;
@@ -151,18 +148,19 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        Assembler pe_assembler("pe");
+        Assembler pe_assembler("pe", generateRelocatable ? 0 : 0x400000, generateRelocatable ? 0 : 0x600000);
         if (!pe_assembler.assemble(asmCodeFromFile, outputFilename)) {
             std::cerr << "Assembly for PE failed" << std::endl;
             return 1;
         }
         pe_assembler.printDebugInfo();
-        if(!generatePe(pe_assembler, outputFilename)) {
+        PEGenerator pe_gen(true);
+        if(!generatePe(pe_gen, pe_assembler, outputFilename)) {
             return 1;
         }
 
     } else if (format == "elf") {
-        Assembler assembler("elf");
+        Assembler assembler("elf", generateRelocatable ? 0 : 0x400000, generateRelocatable ? 0 : 0x600000);
         if (!assembler.assemble(asmCodeFromFile, outputFilename)) {
             std::cerr << "Assembly failed" << std::endl;
             return 1;
@@ -178,11 +176,18 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         assembler.printDebugInfo();
-        if (format == "pe") {
-        //    if(!generatePe(pe_assembler, outputFilename)) {
-        //     std::cerr << "Assembly failed" << std::endl;
-        //     return 1;
-        // }
+        PEGenerator pe_generator(true); // 64-bit
+        if (generateRelocatable) {
+            if (!pe_generator.generateObjectFile(outputFilename, assembler)) {
+                std::cerr << "COFF object generation failed: " << pe_generator.getLastError() << std::endl;
+                return 1;
+            }
+             std::cout << "File generated successfully: " << outputFilename << std::endl;
+        } else {
+            if(!generatePe(pe_generator, assembler, outputFilename)) {
+                std::cerr << "PE generation failed" << std::endl;
+                return 1;
+            }
         }
     } else {
         std::cerr << "Unsupported format: " << format << std::endl;
