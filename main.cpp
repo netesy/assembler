@@ -179,7 +179,10 @@ int main(int argc, char* argv[]) {
         }
         assembler.printDebugInfo();
         if (format == "pe") {
-            assembler.write_coff(outputFilename + ".o");
+        //    if(!generatePe(pe_assembler, outputFilename)) {
+        //     std::cerr << "Assembly failed" << std::endl;
+        //     return 1;
+        // }
         }
     } else {
         std::cerr << "Unsupported format: " << format << std::endl;
