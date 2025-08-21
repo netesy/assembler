@@ -1000,7 +1000,18 @@ void Assembler::encode_x86_64(const Instruction& instr) {
     if (m == "push") {
         const auto& op = instr.operands[0];
         if (op.type == OperandType::IMMEDIATE) {
-            int64_t imm = std::stoll(op.value);
+            int64_t imm = 0;
+            try {
+                imm = std::stoll(op.value, nullptr, 0);
+            } catch (const std::exception& e) {
+                // maybe it's a define
+                if (defines.count(op.value)) {
+                    imm = std::stoll(defines.at(op.value), nullptr, 0);
+                } else {
+                    throw;
+                }
+            }
+
             if (op.size == OperandSize::BYTE || (imm >= -128 && imm <= 127)) {
                 textSection.push_back(0x6A); // PUSH imm8
                 textSection.push_back(static_cast<uint8_t>(imm));
