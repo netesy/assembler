@@ -210,9 +210,14 @@ public:
     bool generateExecutable(const std::string& outputFile,
                             const std::unordered_map<std::string, SymbolEntry>& symbols) {
         try {
-            setupImports();
+            // Ensure .rdata section exists if we have imports, before layout calculation
+            if (!imports_.empty() && !findSection(".rdata")) {
+                addSection(".rdata", {}, 0, IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ);
+            }
+
             buildSymbolTable(symbols);
             layoutSections();
+            setupImports();
 
             std::ofstream file(outputFile, std::ios::binary);
             if (!file) {

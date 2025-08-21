@@ -16,7 +16,9 @@ fi
 mkdir -p bin
 
 # Clean previous build
+
 rm -f bin/assembler bin/test_assembler
+
 
 # Compile the main assembler executable
 echo "Compiling main assembler..."
@@ -42,7 +44,5 @@ echo "Build completed successfully!"
 echo "Executables created:"
 echo "  - bin/assembler (main assembler)"
 echo "  - bin/test_assembler (test program)"
-echo ""
 echo "To run the test: ./bin/test_assembler"
 echo "To run the assembler: ./bin/assembler"
-echo ""

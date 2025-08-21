@@ -13,7 +13,9 @@ bool generateElf(Assembler& assembler, const std::string& inputFilename, const s
     ElfGenerator elfGen(assembler, inputFilename, true, 0x400000);
 
     std::string finalOutputFile = outputFilename;
-    if (finalOutputFile.find('.') == std::string::npos) {
+
+    if (!std::filesystem::path(finalOutputFile).has_extension()) {
+
         finalOutputFile += (generateRelocatable ? ".o" : ".elf");
     }
     if (!elfGen.generateElfWithAllSections(
@@ -70,7 +72,9 @@ bool generatePe(Assembler& assembler, const std::string& outputFilename) {
     }
 
     std::string finalOutputFile = outputFilename;
-    if (finalOutputFile.find('.') == std::string::npos) {
+
+    if (!std::filesystem::path(finalOutputFile).has_extension()) {
+
         finalOutputFile += ".exe";
     }
 
