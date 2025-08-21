@@ -9,6 +9,56 @@
 #include "assembler.hh"
 
 
+#pragma pack(push, 1)
+
+// COFF structures for object file generation
+struct CoffHeader {
+    uint16_t Machine;
+    uint16_t NumberOfSections;
+    uint32_t TimeDateStamp;
+    uint32_t PointerToSymbolTable;
+    uint32_t NumberOfSymbols;
+    uint16_t SizeOfOptionalHeader;
+    uint16_t Characteristics;
+};
+
+struct CoffSectionHeader {
+    char Name[8];
+    uint32_t VirtualSize;
+    uint32_t VirtualAddress;
+    uint32_t SizeOfRawData;
+    uint32_t PointerToRawData;
+    uint32_t PointerToRelocations;
+    uint32_t PointerToLinenumbers;
+    uint16_t NumberOfRelocations;
+    uint16_t NumberOfLinenumbers;
+    uint32_t Characteristics;
+};
+
+struct CoffSymbol {
+    union {
+        char ShortName[8];
+        struct {
+            uint32_t Zeros;
+            uint32_t Offset;
+        } LongName;
+    } Name;
+    uint32_t Value;
+    int16_t SectionNumber;
+    uint16_t Type;
+    uint8_t StorageClass;
+    uint8_t NumberOfAuxSymbols;
+};
+
+struct CoffRelocation {
+    uint32_t VirtualAddress;
+    uint32_t SymbolTableIndex;
+    uint16_t Type;
+};
+
+#pragma pack(pop)
+
+
 namespace {
 // PE constants
 constexpr uint16_t IMAGE_DOS_SIGNATURE = 0x5A4D;       // MZ
@@ -32,6 +82,14 @@ constexpr uint64_t DEFAULT_IMAGE_BASE_X86 = 0x00400000;
 constexpr uint64_t DEFAULT_IMAGE_BASE_X64 = 0x0000000140000000;
 constexpr uint64_t SECTION_ALIGNMENT = 0x1000;
 constexpr uint64_t FILE_ALIGNMENT = 0x200;
+
+// COFF-specific constants
+constexpr uint16_t IMAGE_FILE_LARGE_ADDRESS_AWARE = 0x0020;
+constexpr uint8_t IMAGE_SYM_CLASS_EXTERNAL = 2;
+constexpr uint8_t IMAGE_SYM_CLASS_STATIC = 3;
+constexpr int16_t IMAGE_SYM_DEBUG = -2;
+constexpr uint16_t IMAGE_REL_AMD64_REL32 = 0x0004;
+
 }
 
 class PEGenerator {
@@ -45,6 +103,10 @@ public:
 
     // Main method to generate an executable
     bool generateExecutable(const std::string& outputFile,
+                            Assembler& assembler);
+
+    // Method to generate an object file
+    bool generateObjectFile(const std::string& outputFile,
                             Assembler& assembler);
 
     // Section management

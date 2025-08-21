@@ -66,17 +66,30 @@ The assembler currently supports the following x86-64 instructions:
     ```
 
 4.  **To Generate a Relocatable Object File:**
-    Use the `-c` flag to generate a standard `.o` file that can be linked with other object files.
-    ```sh
-    ./build/assembler -c <input_file.asm> -o <output_file>
-    ```
-    This will create a relocatable object file named `<output_file>.o`.
+    Use the `-c` flag to generate a standard object file. The output format depends on the `--format` flag.
+
+    -   **For ELF (Linux):**
+        ```sh
+        ./build/assembler -c --format elf <input_file.asm> -o <output_file.o>
+        ```
+
+    -   **For COFF (Windows):**
+        ```sh
+        ./build/assembler -c --format pe <input_file.asm> -o <output_file.obj>
+        ```
 
 5.  **Linking with GCC:**
     You can link the generated object file with other object files or libraries using a standard linker like GCC.
-    ```sh
-    gcc -no-pie <output_file>.o -o <final_executable>
-    ```
+
+    -   **For ELF (Linux):**
+        ```sh
+        gcc -no-pie -nostdlib <output_file.o> -o <final_executable>
+        ```
+
+    -   **For COFF (Windows, using MinGW):**
+        ```sh
+        x86_64-w64-mingw32-gcc <output_file.obj> -o <final_executable.exe>
+        ```
 
 ## Sample Assembly Program
 

@@ -58,7 +58,7 @@ Operand Parser::parse_operand(const std::string& op_str) {
                 operand.size = OperandSize::DWORD;
             } else if (cleaned_operand.length() == 2 || (cleaned_operand.length() == 3 && cleaned_operand[2] == 'w')) {
                 operand.size = OperandSize::WORD;
-            } else if (cleaned_operand.length() == 2 && (cleaned_operand[1] == 'l' || cleaned_operand[1] == 'h') || (cleaned_operand.length() == 3 && cleaned_operand[2] == 'b')) {
+            } else if ((cleaned_operand.length() == 2 && (cleaned_operand[1] == 'l' || cleaned_operand[1] == 'h')) || (cleaned_operand.length() == 3 && cleaned_operand[2] == 'b')) {
                 operand.size = OperandSize::BYTE;
             } else {
                 operand.size = OperandSize::QWORD;
