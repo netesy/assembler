@@ -780,11 +780,13 @@ PEGenerator::~PEGenerator() = default;
 bool PEGenerator::generateExecutable(const std::string& outputFile,
                                      Assembler& assembler) {
     return pImpl_->generateExecutable(outputFile, assembler);
+
 }
 
 bool PEGenerator::generateObjectFile(const std::string& outputFile,
                                      Assembler& assembler) {
     return pImpl_->generateObjectFile(outputFile, assembler);
+
 }
 
 void PEGenerator::addSection(const std::string& name, const std::vector<uint8_t>& data,
