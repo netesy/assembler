@@ -276,7 +276,7 @@ std::vector<Instruction> Parser::parse(const std::string& source) {
             continue;
         }
 
-        if (token == "global" || token == ".global" || token == ".globl") {
+        if (token == ".global" || token == ".globl") {
             std::string symbol_name;
             while (line_stream >> symbol_name) {
                 if (assembler_.symbolTable.find(symbol_name) == assembler_.symbolTable.end()) {
