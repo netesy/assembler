@@ -11,6 +11,10 @@
 #include <set>
 #include <variant>
 #include <regex>
+struct WinApiImport {
+    std::string dll;
+    std::string function;
+};
 
 enum class Section {
     NONE,
@@ -127,7 +131,7 @@ struct RelocationEntry {
 class Assembler
 {
 public:
-    Assembler(uint64_t textBase = 0x400000, uint64_t dataBase = 0x600000);
+    Assembler(const std::string& target_format = "elf", uint64_t textBase = 0x400000, uint64_t dataBase = 0x600000);
 
     bool assemble(const std::string &source, const std::string &outputFile = "");
     bool assembleFile(const std::string &inputFile, const std::string &outputFile = "");
@@ -142,11 +146,14 @@ public:
     const std::vector<uint8_t> &getRodataSection() const;
     const std::unordered_map<std::string, std::vector<uint8_t>> &getCustomSections() const;
     uint64_t getEntryPoint() const;
+    const std::vector<WinApiImport>& getWinApiImports() const;
 
     void printDebugInfo() const;
 
 private:
     // Core assembly functions
+    void add_winapi_import(const std::string& dll, const std::string& function);
+    void translate_syscalls_to_winapi(std::vector<Instruction>& instructions);
     std::vector<Instruction> parse(const std::string& code);
     void first_pass(std::vector<Instruction>& instructions);
     void second_pass(const std::vector<Instruction>& instructions);
@@ -202,9 +209,11 @@ private:
     std::vector<RelocationEntry> relocations;
     std::unordered_map<std::string, Macro> macros;
     std::unordered_map<std::string, std::string> defines; // For %define
+    std::vector<WinApiImport> winapi_imports;
 
     // Include path for file processing
     std::vector<std::string> includePaths;
+    std::string target_format_;
 };
 
 #endif // ASSEMBLER_HH

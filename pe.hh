@@ -45,7 +45,6 @@ public:
 
     // Main method to generate an executable
     bool generateExecutable(const std::string& outputFile,
-                            const std::vector<uint8_t>& code,
                             const std::unordered_map<std::string, SymbolEntry>& symbols = {});
 
     // Section management
@@ -53,8 +52,7 @@ public:
                     uint32_t characteristics);
 
     // Import management
-    void addImport(const std::string& moduleName,
-                   const std::vector<std::string>& functionNames);
+    void addImport(const std::string& moduleName, const std::string& functionName);
 
     // Configuration methods
     void setBaseAddress(uint64_t addr);
