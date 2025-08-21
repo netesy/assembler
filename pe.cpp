@@ -322,7 +322,6 @@ public:
             // Relocations
             std::vector<std::vector<CoffRelocation>> relocs_per_section(sections.size());
             for (const auto& reloc : assembler.getRelocations()) {
-
                 auto it = symbolIndexMap.find(reloc.symbolName);
                 if (it == symbolIndexMap.end()) {
                     throw std::runtime_error("Relocation for unknown symbol: " + reloc.symbolName);
@@ -330,7 +329,6 @@ public:
                 CoffRelocation r = {};
                 r.VirtualAddress = reloc.offset;
                 r.SymbolTableIndex = it->second;
-
                 r.Type = IMAGE_REL_AMD64_REL32;
                 for (size_t i = 0; i < sections.size(); ++i) {
                     if (sections[i].first == assembler.getSectionName(reloc.section)) {
