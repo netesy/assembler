@@ -14,7 +14,6 @@ public:
 
 private:
     Assembler& assembler_;
-    void print_instructions(const std::string& title, const std::vector<Instruction>& instructions, int start, int end);
 };
 
 #endif // TRANSLATOR_HH
