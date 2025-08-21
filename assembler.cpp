@@ -1399,6 +1399,7 @@ void Assembler::translate_syscalls_to_winapi(std::vector<Instruction>& instructi
 
                     add_winapi_import("kernel32.dll", "ExitProcess");
 
+
                 } else if (syscall_num == 1) { // sys_write
                     // For now, let's just acknowledge and not translate to avoid crashes
                 }

@@ -60,7 +60,7 @@ int main(int argc, char* argv[]) {
 
     Assembler assembler(format);
     if (!assembler.assemble(asmCodeFromFile, outputFilename)) {
-        std::cerr << "Assembly failed\n";
+        std::cerr << "Assembly failed" << std::endl;
         return 1;
     }
 

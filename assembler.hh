@@ -11,6 +11,10 @@
 #include <set>
 #include <variant>
 #include <regex>
+struct WinApiImport {
+    std::string dll;
+    std::string function;
+};
 
 struct WinApiImport {
     std::string dll;

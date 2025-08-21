@@ -15,6 +15,7 @@ section .text
     syscall
 
 ; sys_exit(0)
+
     mov rax, 60     ; exit
     mov rdi, 0
     syscall

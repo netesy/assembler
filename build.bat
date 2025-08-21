@@ -47,18 +47,32 @@ echo To run the assembler: build\assembler.exe
 echo.
 
 echo Running end-to-end test...
-echo Assembling test.asm into a PE executable...
-build\assembler.exe test.asm --format pe -o build\test.exe
+
+echo Assembling test.asm into an ELF executable...
+build\assembler.exe test.asm --format elf -o build\test.elf
 if %ERRORLEVEL% NEQ 0 (
-    echo Failed to assemble test.asm.
+    echo Failed to assemble test.asm to ELF.
     pause
     exit /b 1
 )
+echo Successfully created build\test.elf
+echo.
 
-echo Running generated executable build\test.exe...
+echo Assembling test.asm into a PE executable...
+build\assembler.exe test.asm --format pe -o build\test.exe
+if %ERRORLEVEL% NEQ 0 (
+    echo Failed to assemble test.asm to PE.
+    pause
+    exit /b 1
+)
+echo Successfully created build\test.exe
+echo.
+
+echo Running generated PE executable build\test.exe...
 build\test.exe
 if %ERRORLEVEL% NEQ 0 (
-    echo Generated executable failed to run or returned an error.
+    echo Generated PE executable failed to run or returned an error.
+
     pause
     exit /b 1
 )
