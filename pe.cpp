@@ -208,14 +208,14 @@ public:
     };
 
     bool generateExecutable(const std::string& outputFile,
-                            const std::unordered_map<std::string, SymbolEntry>& symbols) {
+                            Assembler& assembler) {
         try {
             // Ensure .rdata section exists if we have imports
             if (!imports_.empty() && !findSection(".rdata")) {
                 addSection(".rdata", {}, 0, IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ);
             }
 
-            buildSymbolTable(symbols);
+            buildSymbolTable(assembler.getSymbols());
 
             // Two-pass layout to solve chicken-and-egg problem with import directory size and RVA
             layoutSections(); // First pass to get preliminary RVAs
@@ -613,8 +613,8 @@ PEGenerator::PEGenerator(bool is64Bit, uint64_t baseAddr)
 PEGenerator::~PEGenerator() = default;
 
 bool PEGenerator::generateExecutable(const std::string& outputFile,
-                                     const std::unordered_map<std::string, SymbolEntry>& symbols) {
-    return pImpl_->generateExecutable(outputFile, symbols);
+                                     Assembler& assembler) {
+    return pImpl_->generateExecutable(outputFile, assembler);
 }
 
 void PEGenerator::addSection(const std::string& name, const std::vector<uint8_t>& data,
