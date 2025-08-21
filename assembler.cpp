@@ -1,4 +1,6 @@
 #include "assembler.hh"
+#include "parser.hh"
+#include "translator.hh"
 #include <stdexcept>
 #include <iostream>
 #include <sstream>
@@ -49,16 +51,16 @@ static const std::set<std::string> sse_instructions = {
 };
 
 Assembler::Assembler(const std::string& target_format, uint64_t textBase, uint64_t dataBase)
-    : currentSection(Section::TEXT), textSectionBase(textBase), dataSectionBase(dataBase),
-    bssSectionBase(dataBase + 0x1000), rodataSectionBase(dataBase + 0x2000), entryPoint(0), target_format_(target_format) {
-    currentSectionInfo = {"", Section::TEXT, "", ""};
+    : textSectionBase(textBase), dataSectionBase(dataBase),
+      bssSectionBase(dataBase + 0x1000), rodataSectionBase(dataBase + 0x2000),
+      entryPoint(0), target_format_(target_format), parser_(*this), translator_(*this) {
     includePaths.push_back("."); // Default include path
 }
 
 bool Assembler::assemble(const std::string &source, const std::string &outputFile) {
     try {
         auto instructions = preprocess(source);
-        translate_syscalls_to_winapi(instructions);
+        translator_.translate_syscalls_to_winapi(instructions);
         first_pass(instructions);
         second_pass(instructions);
         return true;
@@ -81,7 +83,7 @@ bool Assembler::assembleFile(const std::string &inputFile, const std::string &ou
 
 std::vector<Instruction> Assembler::preprocess(const std::string& source) {
     std::string processed = process_includes(source);
-    auto instructions = parse(processed);
+    auto instructions = parser_.parse(processed);
     return expand_macros(instructions);
 }
 
@@ -126,112 +128,21 @@ std::string Assembler::process_includes(const std::string& source) {
     return result.str();
 }
 
-OperandSize Assembler::parse_size_prefix(const std::string& operand_str, std::string& cleaned_operand) {
-    cleaned_operand = operand_str;
-
-    if (operand_str.find("byte ptr") == 0) {
-        cleaned_operand = operand_str.substr(8);
-        // Trim leading whitespace
-        cleaned_operand.erase(0, cleaned_operand.find_first_not_of(" \t"));
-        return OperandSize::BYTE;
-    } else if (operand_str.find("word ptr") == 0) {
-        cleaned_operand = operand_str.substr(8);
-        cleaned_operand.erase(0, cleaned_operand.find_first_not_of(" \t"));
-        return OperandSize::WORD;
-    } else if (operand_str.find("dword ptr") == 0) {
-        cleaned_operand = operand_str.substr(9);
-        cleaned_operand.erase(0, cleaned_operand.find_first_not_of(" \t"));
-        return OperandSize::DWORD;
-    } else if (operand_str.find("qword ptr") == 0) {
-        cleaned_operand = operand_str.substr(9);
-        cleaned_operand.erase(0, cleaned_operand.find_first_not_of(" \t"));
-        return OperandSize::QWORD;
-    }
-
-    return OperandSize::INFERRED;
+bool Assembler::is_register(const std::string& reg) const {
+    return register_map.count(reg);
 }
 
-Operand Assembler::parse_operand(const std::string& op_str) {
-    if (op_str.empty()) return {OperandType::NONE, ""};
-
-    std::string cleaned_operand;
-    OperandSize explicit_size = parse_size_prefix(op_str, cleaned_operand);
-    bool size_explicit = (explicit_size != OperandSize::INFERRED);
-
-    Operand operand;
-    operand.size = explicit_size;
-    operand.size_explicit = size_explicit;
-
-    if (cleaned_operand.front() == '[' && cleaned_operand.back() == ']') {
-        operand.type = OperandType::MEMORY;
-        operand.value = cleaned_operand.substr(1, cleaned_operand.length() - 2);
-        return operand;
-    }
-
-    if (register_map.count(cleaned_operand)) {
-        operand.type = OperandType::REGISTER;
-        operand.value = cleaned_operand;
-        // Infer size from register name if not explicit
-        if (!size_explicit) {
-            if (cleaned_operand.length() == 3 && (cleaned_operand[0] == 'e' ||
-                                                  (cleaned_operand[0] == 'r' && cleaned_operand[2] == 'd'))) {
-                operand.size = OperandSize::DWORD;
-            } else if (cleaned_operand.length() == 2 ||
-                       (cleaned_operand.length() == 3 && cleaned_operand[2] == 'w')) {
-                operand.size = OperandSize::WORD;
-            } else if (cleaned_operand.length() == 2 && (cleaned_operand[1] == 'l' ||
-                                                         cleaned_operand[1] == 'h') ||
-                       (cleaned_operand.length() == 3 && cleaned_operand[2] == 'b')) {
-                operand.size = OperandSize::BYTE;
-            } else {
-                operand.size = OperandSize::QWORD;
-            }
-        }
-        return operand;
-    }
-
-    if (xmm_register_map.count(cleaned_operand)) {
-        operand.type = OperandType::XMM_REGISTER;
-        operand.value = cleaned_operand;
-        operand.size = OperandSize::QWORD; // Default for XMM
-        return operand;
-    }
-
-    try {
-        std::stoll(cleaned_operand);
-        operand.type = OperandType::IMMEDIATE;
-        operand.value = cleaned_operand;
-        return operand;
-    } catch (const std::invalid_argument&) {
-        operand.type = OperandType::LABEL;
-        operand.value = cleaned_operand;
-        return operand;
-    }
-}
-
-void Assembler::define_macro(const std::string& line) {
-    std::istringstream iss(line);
-    std::string macro_keyword, macro_name;
-    iss >> macro_keyword >> macro_name; // Skip "%macro"
-
-    Macro macro;
-    macro.name = macro_name;
-
-    std::string param;
-    while (iss >> param) {
-        if (std::isdigit(param[0])) break; // Parameter count, ignore for simplicity
-        macro.parameters.push_back(param);
-    }
-
-    macros[macro_name] = macro;
+bool Assembler::is_xmm_register(const std::string& reg) const {
+    return xmm_register_map.count(reg);
 }
 
 bool Assembler::is_macro_call(const std::string& mnemonic) const {
     return macros.count(mnemonic) > 0;
 }
 
-std::vector<std::string> Assembler::expand_macro_call(const std::string& macro_name,
-                                                      const std::vector<std::string>& args) {
+std::vector<std::string> expand_macro_call(const std::string& macro_name,
+                                           const std::vector<std::string>& args,
+                                           const std::unordered_map<std::string, Macro>& macros) {
     if (!macros.count(macro_name)) return {};
 
     const auto& macro = macros.at(macro_name);
@@ -239,7 +150,6 @@ std::vector<std::string> Assembler::expand_macro_call(const std::string& macro_n
 
     for (const auto& line : macro.body) {
         std::string expanded_line = line;
-        // Simple parameter substitution
         for (size_t i = 0; i < macro.parameters.size() && i < args.size(); ++i) {
             std::string param_placeholder = "%" + std::to_string(i + 1);
             size_t pos = 0;
@@ -256,17 +166,15 @@ std::vector<std::string> Assembler::expand_macro_call(const std::string& macro_n
 
 std::vector<Instruction> Assembler::expand_macros(const std::vector<Instruction>& instructions) {
     std::vector<Instruction> expanded;
-
     for (const auto& instr : instructions) {
         if (is_macro_call(instr.mnemonic)) {
             std::vector<std::string> args;
             for (const auto& op : instr.operands) {
                 args.push_back(op.value);
             }
-
-            auto macro_lines = expand_macro_call(instr.mnemonic, args);
+            auto macro_lines = expand_macro_call(instr.mnemonic, args, macros);
             for (const auto& line : macro_lines) {
-                auto macro_instrs = parse(line);
+                auto macro_instrs = parser_.parse(line);
                 for (auto& macro_instr : macro_instrs) {
                     macro_instr.from_macro = true;
                     macro_instr.original_line = instr.original_line;
@@ -277,315 +185,10 @@ std::vector<Instruction> Assembler::expand_macros(const std::vector<Instruction>
             expanded.push_back(instr);
         }
     }
-
     return expanded;
 }
 
-void Assembler::handle_data_directive(Instruction& instr, const std::string& directive,
-                                      const std::string& data_str) {
-    std::vector<uint8_t> data_bytes;
-
-    if (directive == ".byte" || directive == ".db") {
-        std::istringstream iss(data_str);
-        std::string value;
-        while (std::getline(iss, value, ',')) {
-            value.erase(0, value.find_first_not_of(" \t"));
-            value.erase(value.find_last_not_of(" \t") + 1);
-            uint8_t byte_val = static_cast<uint8_t>(std::stoll(value, nullptr, 0));
-            data_bytes.push_back(byte_val);
-        }
-    } else if (directive == ".word" || directive == ".dw") {
-        std::istringstream iss(data_str);
-        std::string value;
-        while (std::getline(iss, value, ',')) {
-            value.erase(0, value.find_first_not_of(" \t"));
-            value.erase(value.find_last_not_of(" \t") + 1);
-            uint16_t word_val = static_cast<uint16_t>(std::stoll(value, nullptr, 0));
-            data_bytes.push_back(word_val & 0xFF);
-            data_bytes.push_back((word_val >> 8) & 0xFF);
-        }
-    } else if (directive == ".dword" || directive == ".dd") {
-        std::istringstream iss(data_str);
-        std::string value;
-        while (std::getline(iss, value, ',')) {
-            value.erase(0, value.find_first_not_of(" \t"));
-            value.erase(value.find_last_not_of(" \t") + 1);
-            uint32_t dword_val = static_cast<uint32_t>(std::stoll(value, nullptr, 0));
-            for (int i = 0; i < 4; ++i) {
-                data_bytes.push_back((dword_val >> (i * 8)) & 0xFF);
-            }
-        }
-    } else if (directive == ".quad" || directive == ".dq") {
-        std::istringstream iss(data_str);
-        std::string value;
-        while (std::getline(iss, value, ',')) {
-            value.erase(0, value.find_first_not_of(" \t"));
-            value.erase(value.find_last_not_of(" \t") + 1);
-            uint64_t quad_val = static_cast<uint64_t>(std::stoll(value, nullptr, 0));
-            for (int i = 0; i < 8; ++i) {
-                data_bytes.push_back((quad_val >> (i * 8)) & 0xFF);
-            }
-        }
-    } else if (directive == ".asciz") {
-        std::string str_val = data_str;
-        if (str_val.front() == '"' && str_val.back() == '"') {
-            str_val = str_val.substr(1, str_val.length() - 2);
-        }
-        // Handle escape sequences
-        for (size_t i = 0; i < str_val.length(); ++i) {
-            if (str_val[i] == '\\' && i + 1 < str_val.length()) {
-                switch (str_val[i + 1]) {
-                case 'n': data_bytes.push_back('\n'); i++; break;
-                case 't': data_bytes.push_back('\t'); i++; break;
-                case 'r': data_bytes.push_back('\r'); i++; break;
-                case '\\': data_bytes.push_back('\\'); i++; break;
-                case '"': data_bytes.push_back('"'); i++; break;
-                default: data_bytes.push_back(str_val[i]); break;
-                }
-            } else {
-                data_bytes.push_back(str_val[i]);
-            }
-        }
-        data_bytes.push_back(0); // Null terminator
-    } else if (directive == ".space") {
-        size_t space_size = std::stoull(data_str);
-        data_bytes.resize(space_size, 0);
-    }
-
-    instr.data = data_bytes;
-}
-
-std::vector<Instruction> Assembler::parse(const std::string& source) {
-    std::vector<Instruction> instructions;
-    std::istringstream stream(source);
-    std::string line;
-    Section current_section = Section::TEXT;
-    SectionInfo current_section_info = {"", Section::TEXT, "", ""};
-
-    bool in_macro = false;
-    std::string current_macro_name;
-
-    while (std::getline(stream, line)) {
-        std::string original_line = line;
-
-        // Remove comments
-        if (auto pos = line.find(';'); pos != std::string::npos) {
-            line = line.substr(0, pos);
-        }
-
-        std::istringstream line_stream(line);
-        std::string token;
-        line_stream >> token;
-        if (token.empty()) continue;
-
-        // Handle macro definition
-        if (token == "%macro") {
-            in_macro = true;
-            line_stream >> current_macro_name;
-            macros[current_macro_name] = Macro{current_macro_name, {}, {}};
-            continue;
-        } else if (token == "%endmacro") {
-            in_macro = false;
-            current_macro_name = "";
-            continue;
-        } else if (in_macro) {
-            macros[current_macro_name].body.push_back(line);
-            continue;
-        }
-
-        // Handle defines
-        if (token == "%define") {
-            std::string def_name, def_value;
-            line_stream >> def_name;
-            std::getline(line_stream, def_value);
-            def_value.erase(0, def_value.find_first_not_of(" \t"));
-            defines[def_name] = def_value;
-            continue;
-        }
-
-        // Handle labels
-        if (token.back() == ':') {
-            Instruction instr;
-            instr.section = current_section;
-            instr.section_info = current_section_info;
-            instr.is_label = true;
-            instr.label = token.substr(0, token.size() - 1);
-            instr.original_line = original_line;
-            instructions.push_back(instr);
-
-            // Check for instruction on the same line
-            if (line_stream >> token) {
-                // Fall through to instruction processing
-            } else {
-                continue;
-            }
-        }
-
-        // Handle section directives
-        if (token == ".section") {
-            std::string section_name;
-            line_stream >> section_name;
-
-            SectionInfo section_info;
-            section_info.name = section_name;
-
-            // Parse attributes if present
-            std::string attr;
-            if (line_stream >> attr) {
-                if (attr.front() == '"' && attr.back() == '"') {
-                    section_info.attributes = attr.substr(1, attr.length() - 2);
-                } else {
-                    section_info.attributes = attr;
-                }
-            }
-
-            // Parse section type if present
-            if (line_stream >> attr) {
-                section_info.section_type = attr;
-            }
-
-            // Determine section type
-            if (section_name == ".text") {
-                section_info.type = Section::TEXT;
-            } else if (section_name == ".data") {
-                section_info.type = Section::DATA;
-            } else if (section_name == ".bss") {
-                section_info.type = Section::BSS;
-            } else if (section_name == ".rodata") {
-                section_info.type = Section::RODATA;
-            } else if (section_name == ".init") {
-                section_info.type = Section::INIT;
-            } else if (section_name == ".fini") {
-                section_info.type = Section::FINI;
-            } else {
-                section_info.type = Section::CUSTOM;
-            }
-
-            current_section = section_info.type;
-            current_section_info = section_info;
-            sectionInfoMap[section_name] = section_info;
-            continue;
-        }
-
-        // Handle other directives
-        if (token == ".global" || token == ".globl") {
-            std::string symbol_name;
-            while (line_stream >> symbol_name) {
-                if (symbolTable.find(symbol_name) == symbolTable.end()) {
-                    symbolTable[symbol_name] = SymbolEntry{};
-                }
-                symbolTable[symbol_name].binding = SymbolBinding::GLOBAL;
-            }
-            continue;
-        }
-
-        if (token == ".weak") {
-            std::string symbol_name;
-            while (line_stream >> symbol_name) {
-                if (symbolTable.find(symbol_name) == symbolTable.end()) {
-                    symbolTable[symbol_name] = SymbolEntry{};
-                }
-                symbolTable[symbol_name].binding = SymbolBinding::WEAK;
-            }
-            continue;
-        }
-
-        if (token == ".local") {
-            std::string symbol_name;
-            while (line_stream >> symbol_name) {
-                if (symbolTable.find(symbol_name) == symbolTable.end()) {
-                    symbolTable[symbol_name] = SymbolEntry{};
-                }
-                symbolTable[symbol_name].binding = SymbolBinding::LOCAL;
-            }
-            continue;
-        }
-
-        if (token == ".extern") {
-            std::string symbol_name;
-            while (line_stream >> symbol_name) {
-                if (symbolTable.find(symbol_name) == symbolTable.end()) {
-                    symbolTable[symbol_name] = SymbolEntry{};
-                }
-                symbolTable[symbol_name].binding = SymbolBinding::GLOBAL;
-                symbolTable[symbol_name].isDefined = false;
-            }
-            continue;
-        }
-
-        if (token == ".type") {
-            std::string symbol_name, type_str;
-            line_stream >> symbol_name;
-            line_stream >> type_str;
-            if (symbolTable.find(symbol_name) == symbolTable.end()) {
-                symbolTable[symbol_name] = SymbolEntry{};
-            }
-            if (type_str == "@function") {
-                symbolTable[symbol_name].type = SymbolType::FUNCTION;
-            } else if (type_str == "@object") {
-                symbolTable[symbol_name].type = SymbolType::OBJECT;
-            }
-            continue;
-        }
-
-
-        if (token == ".align") {
-            // Handle alignment - simplified implementation
-            continue;
-        }
-
-        // Handle data directives
-        if (token == ".byte" || token == ".db" || token == ".word" || token == ".dw" ||
-            token == ".dword" || token == ".dd" || token == ".quad" || token == ".dq" ||
-            token == ".asciz" || token == ".space") {
-
-            if (instructions.empty() || !instructions.back().is_label) {
-                throw std::runtime_error("Data directive without a label: " + token);
-            }
-
-            std::string data_str;
-            std::getline(line_stream, data_str);
-            data_str.erase(0, data_str.find_first_not_of(" \t"));
-
-            handle_data_directive(instructions.back(), token, data_str);
-            continue;
-        }
-
-        // Handle instructions
-        Instruction instr;
-        instr.section = current_section;
-        instr.section_info = current_section_info;
-        instr.original_line = original_line;
-
-        if (token == "lock") {
-            instr.prefix = token;
-            line_stream >> instr.mnemonic;
-        } else {
-            instr.mnemonic = token;
-        }
-
-        std::string operand_str;
-        if (std::getline(line_stream, operand_str)) {
-            std::stringstream ss(operand_str);
-            std::string op;
-            while(std::getline(ss, op, ',')) {
-                if (auto pos = op.find_first_not_of(" \t"); pos != std::string::npos) {
-                    op = op.substr(pos);
-                }
-                if (auto pos = op.find_last_not_of(" \t"); pos != std::string::npos) {
-                    op = op.substr(0, pos + 1);
-                }
-                if (!op.empty()) {
-                    instr.operands.push_back(parse_operand(op));
-                }
-            }
-        }
-        instructions.push_back(instr);
-    }
-    return instructions;
-}
-
-uint8_t Assembler::get_register_code(const std::string& reg) {
+uint8_t Assembler::get_register_code(const std::string& reg) const {
     auto it = register_map.find(reg);
     if (it != register_map.end()) {
         return it->second;
@@ -593,7 +196,7 @@ uint8_t Assembler::get_register_code(const std::string& reg) {
     throw std::runtime_error("Unknown register: " + reg);
 }
 
-uint8_t Assembler::get_xmm_register_code(const std::string& reg) {
+uint8_t Assembler::get_xmm_register_code(const std::string& reg) const {
     auto it = xmm_register_map.find(reg);
     if (it != xmm_register_map.end()) {
         return it->second;
@@ -601,10 +204,9 @@ uint8_t Assembler::get_xmm_register_code(const std::string& reg) {
     throw std::runtime_error("Unknown XMM register: " + reg);
 }
 
-void Assembler::switch_section(const SectionInfo& section_info) {
-    currentSection = section_info.type;
-    currentSectionInfo = section_info;
-    sectionInfoMap[section_info.name] = section_info;
+void Assembler::encode_modrm_sib(uint8_t mod, uint8_t reg, uint8_t rm,
+                                 const std::string& memory_expr, uint64_t instr_addr, uint64_t instr_size) {
+    // Simplified implementation for now
 }
 
 uint64_t Assembler::get_section_base_address(Section section) const {
@@ -1370,61 +972,6 @@ void Assembler::add_winapi_import(const std::string& dll, const std::string& fun
     }
     winapi_imports.push_back({dll, function});
     symbolTable[function] = { function, 0, 0, SymbolBinding::GLOBAL, SymbolType::FUNCTION, SymbolVisibility::DEFAULT, Section::NONE, false };
-}
-
-void Assembler::translate_syscalls_to_winapi(std::vector<Instruction>& instructions) {
-    if (target_format_ != "pe") {
-        return;
-    }
-
-    for (size_t i = 0; i < instructions.size(); ++i) {
-        if (instructions[i].mnemonic == "syscall") {
-            // Found a syscall, scan backwards to find the syscall number in rax
-            long syscall_num = -1;
-            int rax_mov_index = -1;
-            for (int j = i - 1; j >= 0; j--) {
-                if (instructions[j].mnemonic == "mov" && instructions[j].operands.size() == 2 &&
-                    instructions[j].operands[0].value == "rax" && instructions[j].operands[1].type == OperandType::IMMEDIATE) {
-                    syscall_num = std::stoll(instructions[j].operands[1].value);
-                    rax_mov_index = j;
-                    break;
-                }
-                if (instructions[j].mnemonic == "syscall" || instructions[j].is_label) {
-                    break;
-                }
-            }
-
-            if (syscall_num != -1) {
-                if (syscall_num == 60) { // sys_exit
-                    std::string exit_code = "0";
-
-                    // Look for 'mov rdi, <exit_code>'
-                    for (int j = i - 1; j > rax_mov_index; j--) {
-                        if (instructions[j].mnemonic == "mov" && instructions[j].operands.size() == 2 &&
-                            instructions[j].operands[0].value == "rdi" && instructions[j].operands[1].type == OperandType::IMMEDIATE) {
-                            exit_code = instructions[j].operands[1].value;
-                            instructions.erase(instructions.begin() + j);
-                            i--;
-                            break;
-                        }
-                    }
-
-                    instructions[rax_mov_index].operands[0].value = "ecx";
-                    instructions[rax_mov_index].operands[1].value = exit_code;
-
-                    instructions[i].mnemonic = "call";
-                    instructions[i].operands.clear();
-                    instructions[i].operands.push_back({OperandType::LABEL, "ExitProcess"});
-
-                    add_winapi_import("kernel32.dll", "ExitProcess");
-
-
-                } else if (syscall_num == 1) { // sys_write
-                    // For now, let's just acknowledge and not translate to avoid crashes
-                }
-            }
-        }
-    }
 }
 
 uint64_t Assembler::getEntryPoint() const {

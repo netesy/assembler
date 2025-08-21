@@ -20,7 +20,7 @@ if exist "bin\test_assembler.exe" del "bin\test_assembler.exe"
 
 REM Compile the main assembler executable
 echo Compiling main assembler...
-g++ -std=c++17 -Wall -Wextra -O2 -o bin\assembler.exe main.cpp assembler.cpp elf.cpp pe.cpp
+g++ -std=c++17 -Wall -Wextra -O2 -o bin\assembler.exe main.cpp assembler.cpp elf.cpp pe.cpp parser.cpp translator.cpp
 if %ERRORLEVEL% NEQ 0 (
     echo Error: Failed to compile main assembler
     pause
@@ -29,7 +29,7 @@ if %ERRORLEVEL% NEQ 0 (
 
 REM Compile the test executable
 echo Compiling test assembler...
-g++ -std=c++17 -Wall -Wextra -O2 -o bin\test_assembler.exe test_assembler.cpp assembler.cpp elf.cpp pe.cpp
+g++ -std=c++17 -Wall -Wextra -O2 -o bin\test_assembler.exe test_assembler.cpp assembler.cpp elf.cpp pe.cpp parser.cpp translator.cpp
 if %ERRORLEVEL% NEQ 0 (
     echo Error: Failed to compile test assembler
     pause

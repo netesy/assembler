@@ -22,7 +22,7 @@ rm -f bin/assembler bin/test_assembler
 
 # Compile the main assembler executable
 echo "Compiling main assembler..."
-g++ -std=c++17 -Wall -Wextra -O2 -o bin/assembler main.cpp assembler.cpp elf.cpp pe.cpp
+g++ -std=c++17 -Wall -Wextra -g -o bin/assembler main.cpp assembler.cpp elf.cpp pe.cpp parser.cpp translator.cpp
 if [ $? -ne 0 ]; then
     echo "Error: Failed to compile main assembler"
     exit 1
@@ -30,7 +30,7 @@ fi
 
 # Compile the test executable
 echo "Compiling test assembler..."
-g++ -std=c++17 -Wall -Wextra -O2 -o bin/test_assembler test_assembler.cpp assembler.cpp elf.cpp pe.cpp
+g++ -std=c++17 -Wall -Wextra -g -o bin/test_assembler test_assembler.cpp assembler.cpp elf.cpp pe.cpp parser.cpp translator.cpp
 if [ $? -ne 0 ]; then
     echo "Error: Failed to compile test assembler"
     exit 1
