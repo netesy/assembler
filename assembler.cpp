@@ -593,15 +593,7 @@ void Assembler::second_pass(const std::vector<Instruction>& instructions) {
                 }
             }
         } else if (instr.section == Section::TEXT && !instr.mnemonic.empty()) {
-            size_t before_size = textSection.size();
             encode_x86_64(instr);
-            size_t after_size = textSection.size();
-
-            std::cout << "Encoded '" << instr.mnemonic << "': ";
-            for(size_t k = before_size; k < after_size; ++k) {
-                printf("%02x ", textSection[k]);
-            }
-            std::cout << "\n";
         }
     }
 }
@@ -1017,7 +1009,6 @@ const std::unordered_map<std::string, std::vector<uint8_t>>& Assembler::getCusto
 }
 
 void Assembler::add_winapi_import(const std::string& dll, const std::string& function) {
-    std::cout << "DEBUG: Adding import: " << dll << " -> " << function << std::endl;
     for (const auto& imp : winapi_imports) {
         if (imp.dll == dll && imp.function == function) {
             return;
