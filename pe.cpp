@@ -210,14 +210,17 @@ public:
     bool generateExecutable(const std::string& outputFile,
                             const std::unordered_map<std::string, SymbolEntry>& symbols) {
         try {
-            // Ensure .rdata section exists if we have imports, before layout calculation
+            // Ensure .rdata section exists if we have imports
             if (!imports_.empty() && !findSection(".rdata")) {
                 addSection(".rdata", {}, 0, IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ);
             }
 
             buildSymbolTable(symbols);
-            layoutSections();
-            setupImports();
+
+            // Two-pass layout to solve chicken-and-egg problem with import directory size and RVA
+            layoutSections(); // First pass to get preliminary RVAs
+            setupImports();   // Creates and adds import data, resizing .rdata
+            layoutSections(); // Second pass to finalize layout with correct sizes
 
             std::ofstream file(outputFile, std::ios::binary);
             if (!file) {
@@ -321,15 +324,26 @@ private:
 
         Section* rdata = findSection(".rdata");
         if (!rdata) {
-            addSection(".rdata", {}, 0, IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ);
-            rdata = findSection(".rdata");
+             // This should be handled by the check in generateExecutable before layouting.
+             // If we get here, something is wrong, as we don't have a virtualAddress yet.
+            throw std::runtime_error(".rdata section not found for imports.");
         }
 
-        // The import directory will be placed at the start of .rdata
-        importDirectoryRVA_ = rdata->virtualAddress;
+        // Align the start of the import directory data within the section to a 16-byte boundary
+        while (rdata->data.size() % 16 != 0) {
+            rdata->data.push_back(0);
+        }
 
-        rdata->data = createImportDirectory();
+        // The RVA of the import directory is the section's base RVA plus its offset within the section
+        uint32_t import_data_offset_in_section = rdata->data.size();
+        importDirectoryRVA_ = rdata->virtualAddress + import_data_offset_in_section;
+
+        std::vector<uint8_t> import_directory_data = createImportDirectory();
+
+        // Append new import data to existing .rdata content
+        rdata->data.insert(rdata->data.end(), import_directory_data.begin(), import_directory_data.end());
         rdata->virtualSize = rdata->data.size();
+        // The rawDataSize will be correctly recalculated in the second layout pass
     }
 
     // A helper to write values to a vector<uint8_t>
