@@ -45,7 +45,7 @@ public:
 
     // Main method to generate an executable
     bool generateExecutable(const std::string& outputFile,
-                            const std::unordered_map<std::string, SymbolEntry>& symbols = {});
+                            Assembler& assembler);
 
     // Section management
     void addSection(const std::string& name, const std::vector<uint8_t>& data,

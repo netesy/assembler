@@ -78,7 +78,7 @@ bool generatePe(Assembler& assembler, const std::string& outputFilename) {
         finalOutputFile += ".exe";
     }
 
-    if (!peGen.generateExecutable(finalOutputFile, symbols)) {
+    if (!peGen.generateExecutable(finalOutputFile, assembler)) {
          std::cerr << "PE generation failed: " << peGen.getLastError() << std::endl;
          return false;
     }
@@ -178,8 +178,8 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         assembler.printDebugInfo();
-        if (!generatePe(assembler, outputFilename)) {
-            return 1;
+        if (format == "pe") {
+            assembler.write_coff(outputFilename + ".o");
         }
     } else {
         std::cerr << "Unsupported format: " << format << std::endl;
