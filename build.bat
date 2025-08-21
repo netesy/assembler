@@ -72,6 +72,7 @@ echo Running generated PE executable build\test.exe...
 build\test.exe
 if %ERRORLEVEL% NEQ 0 (
     echo Generated PE executable failed to run or returned an error.
+
     pause
     exit /b 1
 )

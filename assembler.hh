@@ -16,6 +16,11 @@ struct WinApiImport {
     std::string function;
 };
 
+struct WinApiImport {
+    std::string dll;
+    std::string function;
+};
+
 enum class Section {
     NONE,
     TEXT,
