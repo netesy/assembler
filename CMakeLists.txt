@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Create a static library for the assembler
-add_library(assembler_lib STATIC assembler.cpp assembler.hh)
+add_library(assembler_lib STATIC assembler.cpp assembler.hh parser.cpp parser.hh types.hh translator.cpp translator.hh)
 
 # Create a static library for ELF generation
 add_library(elf_lib STATIC elf.cpp elf.hh)
