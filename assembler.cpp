@@ -300,7 +300,7 @@ uint64_t Assembler::get_instruction_size(const Instruction& instr) {
         const auto& op1 = instr.operands[0];
         const auto& op2 = instr.operands[1];
 
-        if (m == "add" || m == "sub" || m == "mov" || m == "cmp") {
+        if (m == "add" || m == "sub" || m == "mov" || m == "cmp" || m == "xor") {
             if (op1.type == OperandType::MEMORY && op2.type == OperandType::IMMEDIATE) {
                 base_size = 8;
             } else if (op1.type == OperandType::REGISTER && op2.type == OperandType::MEMORY) {
@@ -560,7 +560,15 @@ void Assembler::second_pass(const std::vector<Instruction>& instructions) {
                 }
             }
         } else if (instr.section == Section::TEXT && !instr.mnemonic.empty()) {
+            size_t before_size = textSection.size();
             encode_x86_64(instr);
+            size_t after_size = textSection.size();
+
+            std::cout << "Encoded '" << instr.mnemonic << "': ";
+            for(size_t k = before_size; k < after_size; ++k) {
+                printf("%02x ", textSection[k]);
+            }
+            std::cout << "\n";
         }
     }
 }
@@ -898,7 +906,7 @@ void Assembler::encode_x86_64(const Instruction& instr) {
                     }
                 }
             } else if (op1.type == OperandType::REGISTER && op2.type == OperandType::REGISTER) {
-                uint8_t opcode = (m == "mov") ? 0x89 : (m == "add") ? 0x01 : (m == "sub") ? 0x29 : 0x39;
+                uint8_t opcode = (m == "mov") ? 0x89 : (m == "add") ? 0x01 : (m == "sub") ? 0x29 : (m == "xor") ? 0x31 : 0x39;
                 uint8_t dst_reg = get_register_code(op1.value);
                 uint8_t src_reg = get_register_code(op2.value);
 
@@ -965,6 +973,7 @@ const std::unordered_map<std::string, std::vector<uint8_t>>& Assembler::getCusto
 }
 
 void Assembler::add_winapi_import(const std::string& dll, const std::string& function) {
+    std::cout << "DEBUG: Adding import: " << dll << " -> " << function << std::endl;
     for (const auto& imp : winapi_imports) {
         if (imp.dll == dll && imp.function == function) {
             return;

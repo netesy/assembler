@@ -106,6 +106,8 @@ void Translator::translate_syscalls_to_winapi(std::vector<Instruction>& instruct
             new_block.push_back(make_instr("sub", {{OperandType::REGISTER, "rsp"}, {OperandType::IMMEDIATE, "40"}}));
             new_block.push_back(make_instr("mov", {{OperandType::REGISTER, "ecx"}, {OperandType::IMMEDIATE, "-11"}}));
             new_block.push_back(make_instr("call", {{OperandType::LABEL, "GetStdHandle"}}));
+            new_block.push_back(make_instr("mov", {{OperandType::REGISTER, "ecx"}, {OperandType::IMMEDIATE, "-11"}}));
+            new_block.push_back(make_instr("call", {{OperandType::LABEL, "GetStdHandle"}}));
             new_block.push_back(make_instr("mov", {{OperandType::REGISTER, "rcx"}, {OperandType::REGISTER, "rax"}}));
             new_block.push_back(make_instr("mov", {{OperandType::REGISTER, "rdx"}, buf_op}));
             new_block.push_back(make_instr("mov", {{OperandType::REGISTER, "r8"}, len_op}));
@@ -118,6 +120,7 @@ void Translator::translate_syscalls_to_winapi(std::vector<Instruction>& instruct
 
             instructions.insert(instructions.begin() + insert_pos, new_block.begin(), new_block.end());
             assembler_.add_winapi_import("kernel32.dll", "WriteFile");
+            assembler_.add_winapi_import("kernel32.dll", "GetStdHandle");
             assembler_.add_winapi_import("kernel32.dll", "GetStdHandle");
 
             i = insert_pos + new_block.size() -1;
