@@ -115,7 +115,7 @@ void Translator::translate_syscalls_to_winapi(std::vector<Instruction>& instruct
             new_block.push_back(make_instr("call", {{OperandType::LABEL, "GetStdHandle"}}));
             new_block.push_back(make_instr("mov", {{OperandType::REGISTER, "rcx"}, {OperandType::REGISTER, "rax"}})); // hFile
             new_block.push_back(make_instr("lea", {{OperandType::REGISTER, "rdx"}, {OperandType::MEMORY, "[" + buf_op.value + "]"}})); // buffer
-            new_block.push_back(make_instr("mov", {{OperandType::REGISTER, "r8"}, {OperandType::LABEL, len_op.value}})); // length
+            new_block.push_back(make_instr("mov", {{OperandType::REGISTER, "r8"}, len_op})); // length
             new_block.push_back(make_instr("xor", {{OperandType::REGISTER, "r9"}, {OperandType::REGISTER, "r9"}})); // lpNumberOfBytesWritten = NULL
             new_block.push_back(make_instr("mov", {{OperandType::MEMORY, "[rsp+32]"}, {OperandType::IMMEDIATE, "0"}})); // lpOverlapped = NULL
             new_block.push_back(make_instr("call", {{OperandType::LABEL, "WriteFile"}}));

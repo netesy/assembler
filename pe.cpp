@@ -322,9 +322,15 @@ public:
             // Relocations
             std::vector<std::vector<CoffRelocation>> relocs_per_section(sections.size());
             for (const auto& reloc : assembler.getRelocations()) {
+
+                auto it = symbolIndexMap.find(reloc.symbolName);
+                if (it == symbolIndexMap.end()) {
+                    throw std::runtime_error("Relocation for unknown symbol: " + reloc.symbolName);
+                }
                 CoffRelocation r = {};
                 r.VirtualAddress = reloc.offset;
-                r.SymbolTableIndex = symbolIndexMap.at(reloc.symbolName);
+                r.SymbolTableIndex = it->second;
+
                 r.Type = IMAGE_REL_AMD64_REL32;
                 for (size_t i = 0; i < sections.size(); ++i) {
                     if (sections[i].first == assembler.getSectionName(reloc.section)) {
@@ -780,13 +786,11 @@ PEGenerator::~PEGenerator() = default;
 bool PEGenerator::generateExecutable(const std::string& outputFile,
                                      Assembler& assembler) {
     return pImpl_->generateExecutable(outputFile, assembler);
-
 }
 
 bool PEGenerator::generateObjectFile(const std::string& outputFile,
                                      Assembler& assembler) {
     return pImpl_->generateObjectFile(outputFile, assembler);
-
 }
 
 void PEGenerator::addSection(const std::string& name, const std::vector<uint8_t>& data,

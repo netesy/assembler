@@ -88,6 +88,7 @@ Assembler::Assembler(const std::string& target_format, uint64_t textBase, uint64
 }
 
 bool Assembler::assemble(const std::string &source, const std::string &outputFile) {
+    (void)outputFile;
     try {
         auto instructions = preprocess(source);
         translator_.translate_syscalls_to_winapi(instructions);
@@ -237,6 +238,7 @@ uint8_t Assembler::get_xmm_register_code(const std::string& reg) const {
 
 void Assembler::encode_modrm_sib(uint8_t mod, uint8_t reg, uint8_t rm,
                                  const std::string& memory_expr, uint64_t instr_addr, uint64_t instr_size) {
+    (void)mod; (void)reg; (void)rm; (void)memory_expr; (void)instr_addr; (void)instr_size;
     // Simplified implementation for now
 }
 
@@ -790,12 +792,23 @@ void Assembler::encode_x86_64(const Instruction& instr) {
             auto it = symbolTable.find(symbol_name);
             if (it == symbolTable.end()) {
                 symbolTable[symbol_name] = {symbol_name, 0, 0, SymbolBinding::GLOBAL, SymbolType::OBJECT, SymbolVisibility::DEFAULT, Section::NONE, false};
+                 it = symbolTable.find(symbol_name);
             }
+
+            std::string section_name_for_reloc;
+            int64_t addend = -4;
+            if (it->second.section == Section::DATA || it->second.section == Section::BSS) {
+                section_name_for_reloc = (it->second.section == Section::DATA) ? ".data" : ".bss";
+                addend = static_cast<int64_t>(it->second.address - get_section_base_address(it->second.section));
+            } else {
+                section_name_for_reloc = symbol_name;
+            }
+
             RelocationEntry reloc = {
                 textSection.size(),
-                it->second.section == Section::DATA ? ".data" : symbol_name,
+                section_name_for_reloc,
                 RelocationType::R_X86_64_PC32,
-                it->second.section == Section::DATA ? it->second.address - get_section_base_address(it->second.section) : -4,
+                addend,
                 Section::TEXT
             };
             relocations.push_back(reloc);
