@@ -4,7 +4,6 @@
 #include <sstream>
 #include <cstring>
 #include <algorithm>
-#include <sys/stat.h>
 #include <map>
 
 // ELF constants

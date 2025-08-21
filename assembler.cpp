@@ -787,6 +787,8 @@ void Assembler::first_pass(std::vector<Instruction>& instructions) {
             offset += instr.size;
         }
     }
+
+    bssSize = section_offsets[Section::BSS];
 }
 
 void Assembler::encode_sse_instruction(const Instruction& instr) {
@@ -940,17 +942,19 @@ void Assembler::second_pass(const std::vector<Instruction>& instructions) {
 
     for (const auto& instr : instructions) {
         if (instr.is_label) {
-            // Handle data for labels
-            if (std::holds_alternative<std::vector<uint8_t>>(instr.data)) {
-                auto& data_bytes = std::get<std::vector<uint8_t>>(instr.data);
-                auto& section_data = get_section_data(instr.section);
-                section_data.insert(section_data.end(), data_bytes.begin(), data_bytes.end());
-            } else if (std::holds_alternative<int64_t>(instr.data)) {
-                // Legacy .quad support
-                int64_t val = std::get<int64_t>(instr.data);
-                auto& section_data = get_section_data(instr.section);
-                for(int i = 0; i < 8; ++i) {
-                    section_data.push_back((val >> (i*8)) & 0xFF);
+            if (instr.section != Section::BSS) {
+                // Handle data for labels, but not for .bss section
+                if (std::holds_alternative<std::vector<uint8_t>>(instr.data)) {
+                    auto& data_bytes = std::get<std::vector<uint8_t>>(instr.data);
+                    auto& section_data = get_section_data(instr.section);
+                    section_data.insert(section_data.end(), data_bytes.begin(), data_bytes.end());
+                } else if (std::holds_alternative<int64_t>(instr.data)) {
+                    // Legacy .quad support
+                    int64_t val = std::get<int64_t>(instr.data);
+                    auto& section_data = get_section_data(instr.section);
+                    for(int i = 0; i < 8; ++i) {
+                        section_data.push_back((val >> (i*8)) & 0xFF);
+                    }
                 }
             }
         } else if (instr.section == Section::TEXT && !instr.mnemonic.empty()) {
@@ -1333,6 +1337,10 @@ const std::vector<uint8_t>& Assembler::getDataSection() const {
 
 const std::vector<uint8_t>& Assembler::getBssSection() const {
     return bssSection;
+}
+
+uint64_t Assembler::getBssSize() const {
+    return bssSize;
 }
 
 const std::vector<uint8_t>& Assembler::getRodataSection() const {

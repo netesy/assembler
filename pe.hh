@@ -49,7 +49,7 @@ public:
 
     // Section management
     void addSection(const std::string& name, const std::vector<uint8_t>& data,
-                    uint32_t characteristics);
+                    uint32_t virtualSize, uint32_t characteristics);
 
     // Import management
     void addImport(const std::string& moduleName, const std::string& functionName);

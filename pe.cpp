@@ -235,12 +235,12 @@ public:
     }
 
     void addSection(const std::string& name, const std::vector<uint8_t>& data,
-                    uint32_t characteristics) {
+                    uint32_t virtualSize, uint32_t characteristics) {
         Section section;
         section.name = name;
         section.data = data;
         section.characteristics = characteristics;
-        section.virtualSize = data.size();
+        section.virtualSize = virtualSize;
         sections_.push_back(std::move(section));
     }
 
@@ -291,9 +291,9 @@ private:
     }
 
     void setupDefaultSections(const std::vector<uint8_t>& code) {
-        addSection(".text", code, IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ);
-        addSection(".rdata", {}, IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ);
-        addSection(".data", {}, IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE);
+        addSection(".text", code, code.size(), IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ);
+        addSection(".rdata", {}, 0, IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ);
+        addSection(".data", {}, 0, IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE);
     }
 
     void layoutSections() {
@@ -303,7 +303,6 @@ private:
 
         for (auto& section : sections_) {
             section.virtualAddress = currentRVA;
-            section.virtualSize = section.data.size(); // Use actual data size for layout
             section.rawDataPointer = currentRawPtr;
             section.rawDataSize = align(section.data.size(), fileAlignment_);
 
@@ -317,7 +316,7 @@ private:
 
         Section* rdata = findSection(".rdata");
         if (!rdata) {
-            addSection(".rdata", {}, IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ);
+            addSection(".rdata", {}, 0, IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ);
             rdata = findSection(".rdata");
         }
 
@@ -565,7 +564,13 @@ private:
         for (const auto& section : sections_) {
             if (section.rawDataSize > 0) {
                 file.seekp(section.rawDataPointer);
-                file.write(reinterpret_cast<const char*>(section.data.data()), section.data.size());
+                if (!section.data.empty()) {
+                    file.write(reinterpret_cast<const char*>(section.data.data()), section.data.size());
+                }
+                if (section.rawDataSize > section.data.size()) {
+                    std::vector<char> padding(section.rawDataSize - section.data.size(), 0);
+                    file.write(padding.data(), padding.size());
+                }
             }
         }
     }
@@ -594,8 +599,8 @@ bool PEGenerator::generateExecutable(const std::string& outputFile,
 }
 
 void PEGenerator::addSection(const std::string& name, const std::vector<uint8_t>& data,
-                             uint32_t characteristics) {
-    pImpl_->addSection(name, data, characteristics);
+                             uint32_t virtualSize, uint32_t characteristics) {
+    pImpl_->addSection(name, data, virtualSize, characteristics);
 }
 
 void PEGenerator::addImport(const std::string& moduleName, const std::string& functionName) {
