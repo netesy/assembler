@@ -261,9 +261,10 @@ public:
             fileSymbol.StorageClass = 103; // IMAGE_SYM_CLASS_FILE
             fileSymbol.NumberOfAuxSymbols = 1;
             symbols.push_back(fileSymbol);
+
             CoffSymbol fileAuxSymbol = {};
-            // For simplicity, using a placeholder filename. A real implementation would get this from the assembler.
-            strncpy(reinterpret_cast<char*>(&fileAuxSymbol), "source.asm", sizeof(CoffSymbol));
+            // A real implementation would get the input filename from the assembler.
+            strncpy(reinterpret_cast<char*>(&fileAuxSymbol), "source.asm", sizeof(fileAuxSymbol));
             symbols.push_back(fileAuxSymbol);
 
 
