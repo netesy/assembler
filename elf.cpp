@@ -424,7 +424,13 @@ private:
                 new_sym.st_shndx = SHN_UNDEF;
                 new_sym.st_value = 0;
             } else {
-                new_sym.st_shndx = findSectionIndex(assembler_.getSectionName(sym.section));
+                switch(sym.section) {
+                    case ::Section::TEXT: new_sym.st_shndx = findSectionIndex(".text"); break;
+                    case ::Section::DATA: new_sym.st_shndx = findSectionIndex(".data"); break;
+                    case ::Section::BSS: new_sym.st_shndx = findSectionIndex(".bss"); break;
+                    case ::Section::RODATA: new_sym.st_shndx = findSectionIndex(".rodata"); break;
+                    default: new_sym.st_shndx = SHN_UNDEF;
+                }
                 new_sym.st_value = generateRelocatable ? sym.address - assembler_.getSectionBase(sym.section) : sym.address;
             }
 

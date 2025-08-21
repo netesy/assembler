@@ -35,19 +35,25 @@ void Translator::translate_syscalls_to_winapi(std::vector<Instruction>& instruct
             if (instructions[j].mnemonic == "mov" && instructions[j].operands.size() == 2) {
                 const auto& reg = instructions[j].operands[0].value;
                 if (reg == "rax" || reg == "eax") {
-                    if (instructions[j].operands[1].type == OperandType::IMMEDIATE) {
+                    if (rax_idx == -1 && instructions[j].operands[1].type == OperandType::IMMEDIATE) {
                         syscall_num = std::stoll(instructions[j].operands[1].value);
                         rax_idx = j;
                     }
                 } else if (reg == "rdi" || reg == "edi") {
-                    rdi_idx = j;
-                    exit_code_op = instructions[j].operands[1];
+                    if (rdi_idx == -1) {
+                        rdi_idx = j;
+                        exit_code_op = instructions[j].operands[1];
+                    }
                 } else if (reg == "rsi" || reg == "esi") {
-                    rsi_idx = j;
-                    buf_op = instructions[j].operands[1];
+                    if (rsi_idx == -1) {
+                        rsi_idx = j;
+                        buf_op = instructions[j].operands[1];
+                    }
                 } else if (reg == "rdx" || reg == "edx") {
-                    rdx_idx = j;
-                    len_op = instructions[j].operands[1];
+                    if (rdx_idx == -1) {
+                        rdx_idx = j;
+                        len_op = instructions[j].operands[1];
+                    }
                 }
             }
         }
