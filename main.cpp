@@ -10,7 +10,7 @@ using namespace std;
 // Function to generate ELF output
 bool generateElf(Assembler& assembler, const std::string& inputFilename, const std::string& outputFilename, bool generateRelocatable) {
     const auto& symbols = assembler.getSymbols();
-    ElfGenerator elfGen(assembler, inputFilename, true, 0x400000);
+    ElfGenerator elfGen(assembler, inputFilename, assembler.get_architecture().get_elf_machine_type(), true, 0x400000);
 
     std::string finalOutputFile = outputFilename;
 
@@ -89,6 +89,7 @@ int main(int argc, char* argv[]) {
     std::string inputFilename;
     std::string outputFilename;
     std::string format = "default";
+    std::string arch = "x86-64";
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -106,6 +107,13 @@ int main(int argc, char* argv[]) {
                 format = argv[++i];
             } else {
                 std::cerr << "--format option requires one argument." << std::endl;
+                return 1;
+            }
+        } else if (arg == "--arch") {
+            if (i + 1 < argc) {
+                arch = argv[++i];
+            } else {
+                std::cerr << "--arch option requires one argument." << std::endl;
                 return 1;
             }
         } else {
@@ -138,7 +146,7 @@ int main(int argc, char* argv[]) {
     if (format == "default") {
         cout << "No format specified, generating for both ELF and PE..." << endl;
 
-        Assembler elf_assembler("elf", generateRelocatable ? 0 : 0x400000, generateRelocatable ? 0 : 0x600000);
+        Assembler elf_assembler(arch, "elf", generateRelocatable ? 0 : 0x400000, generateRelocatable ? 0 : 0x600000);
         if (!elf_assembler.assemble(asmCodeFromFile, outputFilename)) {
             std::cerr << "Assembly for ELF failed" << std::endl;
             return 1;
@@ -148,7 +156,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        Assembler pe_assembler("pe", generateRelocatable ? 0 : 0x400000, generateRelocatable ? 0 : 0x600000);
+        Assembler pe_assembler(arch, "pe", generateRelocatable ? 0 : 0x400000, generateRelocatable ? 0 : 0x600000);
         if (!pe_assembler.assemble(asmCodeFromFile, outputFilename)) {
             std::cerr << "Assembly for PE failed" << std::endl;
             return 1;
@@ -160,7 +168,7 @@ int main(int argc, char* argv[]) {
         }
 
     } else if (format == "elf") {
-        Assembler assembler("elf", generateRelocatable ? 0 : 0x400000, generateRelocatable ? 0 : 0x600000);
+        Assembler assembler(arch, "elf", generateRelocatable ? 0 : 0x400000, generateRelocatable ? 0 : 0x600000);
         if (!assembler.assemble(asmCodeFromFile, outputFilename)) {
             std::cerr << "Assembly failed" << std::endl;
             return 1;
@@ -170,7 +178,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     } else if (format == "pe") {
-        Assembler assembler("pe");
+        Assembler assembler(arch, "pe");
         if (!assembler.assemble(asmCodeFromFile, outputFilename)) {
             std::cerr << "Assembly failed" << std::endl;
             return 1;

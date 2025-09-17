@@ -114,8 +114,8 @@ inline uint64_t ELF64_R_INFO(uint32_t sym, uint32_t type) {
 
 class ElfGenerator::Impl {
 public:
-    Impl(const Assembler& assembler, const std::string& inputFilename, bool is64Bit, uint64_t baseAddr)
-        : assembler_(assembler), inputFilename_(inputFilename), is64Bit_(is64Bit), baseAddress_(baseAddr), entryPoint_(0), pageSize_(0x1000) {}
+    Impl(const Assembler& assembler, const std::string& inputFilename, uint16_t machine_type, bool is64Bit, uint64_t baseAddr)
+        : assembler_(assembler), inputFilename_(inputFilename), machine_type_(machine_type), is64Bit_(is64Bit), baseAddress_(baseAddr), entryPoint_(0), pageSize_(0x1000) {}
 
     bool generate(const std::string& outputFile,
                   const std::vector<uint8_t>& textSectionData,
@@ -248,6 +248,7 @@ private:
 
     const Assembler& assembler_;
     const std::string& inputFilename_;
+    uint16_t machine_type_;
     bool is64Bit_;
     uint64_t baseAddress_;
     uint64_t entryPoint_;
@@ -565,7 +566,7 @@ private:
         header.e_ident[5] = 1;  // Little endian
         header.e_ident[6] = 1;  // ELF version
         header.e_type = generateRelocatable ? ET_REL : ET_EXEC;
-        header.e_machine = EM_X86_64;
+        header.e_machine = machine_type_;
         header.e_version = 1;
         header.e_entry = entryPoint_; // Already set to 0 for relocatable
         header.e_phoff = generateRelocatable ? 0 : sizeof(ElfHeader64);
@@ -607,8 +608,8 @@ private:
     }
 };
 
-ElfGenerator::ElfGenerator(const Assembler& assembler, const std::string& inputFilename, bool is64Bit, uint64_t baseAddress)
-    : pImpl(std::make_unique<Impl>(assembler, inputFilename, is64Bit, baseAddress)) {}
+ElfGenerator::ElfGenerator(const Assembler& assembler, const std::string& inputFilename, uint16_t machine_type, bool is64Bit, uint64_t baseAddress)
+    : pImpl(std::make_unique<Impl>(assembler, inputFilename, machine_type, is64Bit, baseAddress)) {}
 
 ElfGenerator::~ElfGenerator() = default;
 

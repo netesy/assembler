@@ -14,7 +14,7 @@ struct ElfSegment;
 class ElfGenerator {
 public:
     // Construction and configuration
-    explicit ElfGenerator(const Assembler& assembler, const std::string& inputFilename, bool is64Bit = true, uint64_t baseAddress = 0x400000);
+    explicit ElfGenerator(const Assembler& assembler, const std::string& inputFilename, uint16_t machine_type, bool is64Bit = true, uint64_t baseAddress = 0x400000);
     ~ElfGenerator();
 
     // Section management

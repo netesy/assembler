@@ -50,28 +50,32 @@ Operand Parser::parse_operand(const std::string& op_str) {
         return operand;
     }
 
-    if (assembler_.is_register(cleaned_operand)) {
-        operand.type = OperandType::REGISTER;
+    if (assembler_.get_architecture().is_register(cleaned_operand)) {
         operand.value = cleaned_operand;
-        if (!size_explicit) {
-            if (cleaned_operand.length() == 3 && (cleaned_operand[0] == 'e' || (cleaned_operand[0] == 'r' && cleaned_operand[2] == 'd'))) {
-                operand.size = OperandSize::DWORD;
-            } else if (cleaned_operand.length() == 2 || (cleaned_operand.length() == 3 && cleaned_operand[2] == 'w')) {
-                operand.size = OperandSize::WORD;
-            } else if ((cleaned_operand.length() == 2 && (cleaned_operand[1] == 'l' || cleaned_operand[1] == 'h')) || (cleaned_operand.length() == 3 && cleaned_operand[2] == 'b')) {
-                operand.size = OperandSize::BYTE;
-            } else {
-                operand.size = OperandSize::QWORD;
+        // The architecture implementation should determine the type (GPR, XMM, etc.)
+        // For now, we'll keep the old logic to distinguish.
+        if (cleaned_operand.find("xmm") == 0) {
+            operand.type = OperandType::XMM_REGISTER;
+            operand.size = OperandSize::QWORD;
+        } else {
+            operand.type = OperandType::REGISTER;
+            if (!size_explicit) {
+                if (cleaned_operand.length() == 3 && (cleaned_operand[0] == 'e' || (cleaned_operand[0] == 'r' && cleaned_operand[2] == 'd'))) {
+                    operand.size = OperandSize::DWORD;
+                } else if (cleaned_operand.length() == 2 || (cleaned_operand.length() == 3 && cleaned_operand[2] == 'w')) {
+                    operand.size = OperandSize::WORD;
+                } else if ((cleaned_operand.length() == 2 && (cleaned_operand[1] == 'l' || cleaned_operand[1] == 'h')) || (cleaned_operand.length() == 3 && cleaned_operand[2] == 'b')) {
+                    operand.size = OperandSize::BYTE;
+                } else {
+                    operand.size = OperandSize::QWORD;
+                }
             }
         }
         return operand;
     }
 
-    if (assembler_.is_xmm_register(cleaned_operand)) {
-        operand.type = OperandType::XMM_REGISTER;
-        operand.value = cleaned_operand;
-        operand.size = OperandSize::QWORD;
-        return operand;
+    if (cleaned_operand.front() == '#') {
+        cleaned_operand = cleaned_operand.substr(1);
     }
 
     try {

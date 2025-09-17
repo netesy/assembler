@@ -24,7 +24,7 @@ void assert_bytes(const std::vector<uint8_t>& generated, const std::vector<uint8
 }
 
 void test_simple_instructions() {
-    Assembler assembler;
+    Assembler assembler("x86-64");
     std::string code = R"(
         mov rax, 0x1234
         add rbx, rax
@@ -42,7 +42,7 @@ void test_simple_instructions() {
 }
 
 void test_jumps_and_labels() {
-    Assembler assembler;
+    Assembler assembler("x86-64");
     std::string code = R"(
     _start:
         mov rax, 1
@@ -71,7 +71,7 @@ void test_jumps_and_labels() {
 }
 
 void test_stack_operations() {
-    Assembler assembler;
+    Assembler assembler("x86-64");
     std::string code = R"(
         push rax
         pop rbx
@@ -87,7 +87,7 @@ void test_stack_operations() {
 }
 
 void test_complex_stack_operations() {
-    Assembler assembler("elf", 0x400000, 0x601000);
+    Assembler assembler("x86-64", "elf", 0x400000, 0x601000);
     std::string code = R"(
     .section .data
     my_var: .quad 0x1122334455667788
