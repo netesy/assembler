@@ -46,12 +46,12 @@ public:
                                     const std::unordered_map<std::string, SymbolEntry> &symbols,
                                     const std::vector<RelocationEntry> &relocations,
                                     const std::vector<uint8_t> &dataSection,
-                                    const std::vector<uint8_t> &bssSection,
                                     const std::vector<uint8_t> &rodataSection,
                                     uint64_t entryPoint,
                                     uint64_t dataBase,
                                     uint64_t bssBase,
                                     uint64_t rodataBase,
+                                    uint64_t bssSize,
                                     bool generateRelocatable = false);
 
     // Configuration

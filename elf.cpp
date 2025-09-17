@@ -124,7 +124,7 @@ public:
                   const std::vector<RelocationEntry>& relocations,
                   uint64_t entryPoint,
                   uint64_t dataBase,
-                  const std::vector<uint8_t>& bssSectionData,
+                  uint64_t bssSize,
                   const std::vector<uint8_t>& rodataSectionData,
                   uint64_t bssBase,
                   uint64_t rodataBase,
@@ -152,14 +152,14 @@ public:
                 addSection(".data", dataSectionData, currentDataBase, SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 4);
             }
             addSection(".text", textSectionData, textBase, SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 16);
-            if (!bssSectionData.empty()) {
+            if (bssSize > 0) {
                 // For .bss, the vector is empty but the size is stored in the header
                 Section bss_section;
                 bss_section.name = ".bss";
                 bss_section.header.sh_type = SHT_NOBITS;
                 bss_section.header.sh_flags = SHF_ALLOC | SHF_WRITE;
                 bss_section.header.sh_addr = currentBssBase;
-                bss_section.header.sh_size = bssSectionData.size();
+                bss_section.header.sh_size = bssSize;
                 bss_section.header.sh_addralign = 16;
                 bss_section.header.sh_name = addToStringTable(shstringTable_, ".bss");
                 sections_.push_back(bss_section);
@@ -540,16 +540,16 @@ private:
             }
 
             // Extend for BSS if present
-            if (bss_sec && !bss_sec->data.empty()) {
+            if (bss_sec && bss_sec->header.sh_size > 0) {
                 if (!data_sec || data_sec->data.empty()) {
                     data_phdr.p_offset = bss_sec->header.sh_offset;
                     data_phdr.p_vaddr = bss_sec->header.sh_addr;
                     data_phdr.p_paddr = bss_sec->header.sh_addr;
                     data_phdr.p_filesz = 0; // BSS has no file content
-                    data_phdr.p_memsz = bss_sec->data.size();
+                    data_phdr.p_memsz = bss_sec->header.sh_size;
                 } else {
                     // Extend existing data segment
-                    data_phdr.p_memsz += bss_sec->data.size();
+                    data_phdr.p_memsz += bss_sec->header.sh_size;
                 }
             }
 
@@ -599,11 +599,10 @@ private:
     }
 
     void writeSectionHeaders(std::ofstream& file) {
-        file.seekp(sizeof(ElfHeader64));
+        if (sectionHeadersOffset_ == 0) return; // Nothing to write for relocatables
+        file.seekp(sectionHeadersOffset_);
         for (const auto& section : sections_) {
-            auto header = section.header;
-            header.sh_size = section.data.size();
-            file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+            file.write(reinterpret_cast<const char*>(&section.header), sizeof(section.header));
         }
     }
 };
@@ -622,7 +621,7 @@ bool ElfGenerator::generateElf(const std::vector<uint8_t> &textSection,
                                uint64_t dataBase,
                                bool generateRelocatable)
 {
-    return pImpl->generate(outputFile, textSection, dataSection, symbols, relocations, entryPoint, dataBase, {}, {}, 0, 0, generateRelocatable);
+    return pImpl->generate(outputFile, textSection, dataSection, symbols, relocations, entryPoint, dataBase, 0, {}, 0, 0, generateRelocatable);
 }
 
 // New method for enhanced section support
@@ -631,16 +630,16 @@ bool ElfGenerator::generateElfWithAllSections(const std::vector<uint8_t> &textSe
                                               const std::unordered_map<std::string, SymbolEntry> &symbols,
                                               const std::vector<RelocationEntry> &relocations,
                                               const std::vector<uint8_t> &dataSection,
-                                              const std::vector<uint8_t> &bssSection,
                                               const std::vector<uint8_t> &rodataSection,
                                               uint64_t entryPoint,
                                               uint64_t dataBase,
                                               uint64_t bssBase,
                                               uint64_t rodataBase,
+                                              uint64_t bssSize,
                                               bool generateRelocatable)
 {
     return pImpl->generate(outputFile, textSection, dataSection, symbols, relocations, entryPoint,
-                           dataBase, bssSection, rodataSection, bssBase, rodataBase, generateRelocatable);
+                           dataBase, bssSize, rodataSection, bssBase, rodataBase, generateRelocatable);
 }
 
 void ElfGenerator::addSection(const std::string& name, const std::vector<uint8_t>& data,

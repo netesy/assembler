@@ -24,12 +24,12 @@ bool generateElf(Assembler& assembler, const std::string& inputFilename, const s
             symbols,
             assembler.getRelocations(),
             assembler.getDataSection(),
-            assembler.getBssSection(),
             assembler.getRodataSection(),
             assembler.getEntryPoint(),
             0x600000,
             0x601000,
             0x602000,
+            assembler.getBssSize(),
             generateRelocatable
             )) {
         std::cerr << "ELF generation failed: " << elfGen.getLastError() << std::endl;

@@ -176,6 +176,15 @@ void Parser::handle_data_directive(Instruction& instr, const std::string& direct
     } else if (directive == ".resb") {
         size_t space_size = std::stoull(data_str);
         data_bytes.resize(space_size, 0);
+    } else if (directive == ".resw") {
+        size_t count = std::stoull(data_str);
+        data_bytes.resize(count * 2, 0);
+    } else if (directive == ".resd") {
+        size_t count = std::stoull(data_str);
+        data_bytes.resize(count * 4, 0);
+    } else if (directive == ".resq") {
+        size_t count = std::stoull(data_str);
+        data_bytes.resize(count * 8, 0);
     } else if (directive == ".times") {
         std::istringstream iss(data_str);
         size_t count;
@@ -293,7 +302,8 @@ std::vector<Instruction> Parser::parse(const std::string& source) {
 
         if (token == ".byte" || token == ".db" || token == ".word" || token == ".dw" ||
             token == ".dword" || token == ".dd" || token == ".quad" || token == ".dq" ||
-            token == ".asciz" || token == ".space") {
+            token == ".asciz" || token == ".space" || token == ".resb" ||
+            token == ".resw" || token == ".resd" || token == ".resq") {
             if (instructions.empty() || !instructions.back().is_label) {
                 throw std::runtime_error("Data directive without a label: " + token);
             }
