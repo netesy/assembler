@@ -210,6 +210,12 @@ public:
     bool generateExecutable(const std::string& outputFile,
                             Assembler& assembler) {
         try {
+            validateOptions();
+
+            if (!findSection(".text")) {
+                throw std::runtime_error("PE Generation Error: No .text section found. An executable must have a .text section.");
+            }
+
             // Ensure .rdata section exists if we have imports
             if (!imports_.empty() && !findSection(".rdata")) {
                 addSection(".rdata", {}, 0, IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ);
@@ -217,10 +223,23 @@ public:
 
             buildSymbolTable(assembler.getSymbols());
 
-            // Two-pass layout to solve chicken-and-egg problem with import directory size and RVA
-            layoutSections(); // First pass to get preliminary RVAs
-            setupImports();   // Creates and adds import data, resizing .rdata
-            layoutSections(); // Second pass to finalize layout with correct sizes
+            // Reserve space for the import directory in .rdata before the layout pass.
+            uint32_t importDirectorySize = calculateImportDirectorySize();
+            if (importDirectorySize > 0) {
+                Section* rdata = findSection(".rdata");
+                if (rdata) {
+                    // The import directory will be aligned within the section.
+                    uint32_t offset = align(rdata->data.size(), 16);
+                    // The total virtual size will be the original content + padding + import directory.
+                    rdata->virtualSize = offset + importDirectorySize;
+                }
+            }
+
+            // A single, final layout pass determines the correct RVAs for all sections.
+            layoutSections();
+
+            // Now that layout is final, generate the import directory with the correct RVAs.
+            setupImports();
 
             std::ofstream file(outputFile, std::ios::binary);
             if (!file) {
@@ -449,6 +468,21 @@ private:
     std::vector<COFFSymbol> coffSymbols_;
     std::vector<char> stringTable_;
 
+    void validateOptions() {
+        if (sectionAlignment_ < fileAlignment_) {
+            throw std::runtime_error("PE Options Error: SectionAlignment must be greater than or equal to FileAlignment.");
+        }
+        auto is_power_of_two = [](uint32_t n) {
+            return (n != 0) && ((n & (n - 1)) == 0);
+        };
+        if (!is_power_of_two(fileAlignment_) || fileAlignment_ < 512 || fileAlignment_ > 65536) {
+            throw std::runtime_error("PE Options Error: FileAlignment must be a power of two between 512 and 65536, inclusive.");
+        }
+        if (!is_power_of_two(sectionAlignment_)) {
+            throw std::runtime_error("PE Options Error: SectionAlignment must be a power of two.");
+        }
+    }
+
     uint32_t align(uint32_t value, uint32_t alignment) {
         return (value + alignment - 1) & ~(alignment - 1);
     }
@@ -493,26 +527,26 @@ private:
 
         Section* rdata = findSection(".rdata");
         if (!rdata) {
-             // This should be handled by the check in generateExecutable before layouting.
-             // If we get here, something is wrong, as we don't have a virtualAddress yet.
             throw std::runtime_error(".rdata section not found for imports.");
         }
 
-        // Align the start of the import directory data within the section to a 16-byte boundary
-        while (rdata->data.size() % 16 != 0) {
-            rdata->data.push_back(0);
+        // The virtualSize of .rdata was already calculated to reserve space.
+        // Now, we generate the import directory data and place it into the .rdata section.
+
+        // Pad the existing data to ensure the import directory is aligned.
+        uint32_t import_data_offset_in_section = align(rdata->data.size(), 16);
+        if (import_data_offset_in_section > rdata->data.size()) {
+            rdata->data.insert(rdata->data.end(), import_data_offset_in_section - rdata->data.size(), 0);
         }
 
-        // The RVA of the import directory is the section's base RVA plus its offset within the section
-        uint32_t import_data_offset_in_section = rdata->data.size();
+        // The RVA of the import directory is now final and correct.
         importDirectoryRVA_ = rdata->virtualAddress + import_data_offset_in_section;
 
         std::vector<uint8_t> import_directory_data = createImportDirectory();
 
-        // Append new import data to existing .rdata content
+        // Append the generated import data to the .rdata section.
         rdata->data.insert(rdata->data.end(), import_directory_data.begin(), import_directory_data.end());
-        rdata->virtualSize = rdata->data.size();
-        // The rawDataSize will be correctly recalculated in the second layout pass
+        // Do NOT modify rdata->virtualSize here; it was set before the layout pass.
     }
 
     // A helper to write values to a vector<uint8_t>
