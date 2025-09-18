@@ -110,6 +110,43 @@ Import Directory Table
 - Fix NT headers for both 32-bit and 64-bit
 - Proper data directory entries
 
+#### Enhanced PE Compliance Design
+**Optional Header Specifications:**
+```cpp
+struct OptionalHeaderFields {
+    uint64_t ImageBase = 0x140000000;        // Default for 64-bit PE
+    uint32_t SectionAlignment = 0x1000;      // 4KB page alignment
+    uint32_t FileAlignment = 0x200;          // 512-byte file alignment
+    uint32_t AddressOfEntryPoint;            // RVA to start of code
+    uint32_t SizeOfImage;                    // Rounded size of headers + sections
+    uint32_t SizeOfHeaders;                  // Aligned header size
+};
+```
+
+**Required Sections Layout:**
+```
+.text   → Executable code (IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ)
+.rdata  → Read-only data/constants (IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ)
+.data   → Initialized data (IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE)
+.idata  → Import table (IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE)
+.reloc  → Base relocations (IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_DISCARDABLE)
+```
+
+**File Characteristics Flags:**
+```cpp
+uint16_t characteristics = 
+    IMAGE_FILE_EXECUTABLE_IMAGE |           // File is executable
+    IMAGE_FILE_LARGE_ADDRESS_AWARE |        // Can handle >2GB addresses
+    IMAGE_FILE_LINE_NUMBERS_STRIPPED |      // No line number info
+    IMAGE_FILE_LOCAL_SYMS_STRIPPED |        // No local symbols
+    IMAGE_FILE_RELOCS_STRIPPED;             // Remove this flag - keep relocations
+```
+
+**Relocation Handling:**
+- Do NOT set IMAGE_FILE_RELOCS_STRIPPED flag
+- Generate proper .reloc section with base relocation entries
+- Maintain relocation information for address fixups
+
 ## Data Models
 
 ### Fixed Instruction Format
@@ -193,6 +230,33 @@ struct SymbolInfo {
 4. **ELF.cpp Line 800-900**: Fix program header generation
 5. **PE.cpp Line 400-500**: Fix import table generation
 6. **PE.cpp Line 600-700**: Fix section alignment calculations
+
+### Enhanced PE Compliance Fixes
+
+7. **PE.cpp Optional Header**: Implement proper field initialization
+   - Set ImageBase = 0x140000000 for 64-bit executables
+   - Configure SectionAlignment = 0x1000, FileAlignment = 0x200
+   - Calculate AddressOfEntryPoint as RVA to .text section start
+   - Compute SizeOfImage as aligned total of headers + all sections
+   - Set SizeOfHeaders to aligned size of all headers
+
+8. **PE.cpp Section Generation**: Create all required sections
+   - .text section with executable code and proper characteristics
+   - .rdata section for constants and strings (if needed)
+   - .data section for initialized variables (if needed)
+   - .idata section with complete import table structure
+   - .reloc section with base relocation entries
+
+9. **PE.cpp Characteristics Flags**: Set proper file characteristics
+   - Remove IMAGE_FILE_RELOCS_STRIPPED flag
+   - Add IMAGE_FILE_LARGE_ADDRESS_AWARE flag
+   - Ensure IMAGE_FILE_EXECUTABLE_IMAGE is set
+   - Include line numbers and local symbols stripped flags
+
+10. **PE.cpp Import Table**: Ensure KERNEL32.dll with ExitProcess
+    - Create proper Import Directory Table entry
+    - Generate Import Lookup Table and Import Address Table
+    - Include ExitProcess function import with correct hint/name
 
 ### Architecture-Specific Considerations
 

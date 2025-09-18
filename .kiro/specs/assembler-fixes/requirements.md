@@ -44,6 +44,23 @@ This feature addresses critical issues in the assembler, ELF generator, and PE g
 5. WHEN writing section data THEN the generator SHALL maintain correct file and virtual addresses
 6. WHEN setting up relocations THEN the generator SHALL handle address fixups correctly
 
+### Requirement 6: Implement Proper PE Relocation and Header Structure
+
+**User Story:** As a developer, I want the PE generator to create fully compliant PE files with proper relocations and headers, so that the executables work correctly on all Windows systems.
+
+#### Acceptance Criteria
+
+1. WHEN generating PE files THEN the generator SHALL NOT strip relocations and SHALL set the HAS_RELOC flag in file characteristics
+2. WHEN creating Optional Header THEN the generator SHALL set AddressOfEntryPoint to the start of code section
+3. WHEN setting ImageBase THEN the generator SHALL use 0x140000000 as default for 64-bit PE files
+4. WHEN aligning sections THEN the generator SHALL use SectionAlignment = 0x1000 and FileAlignment = 0x200
+5. WHEN calculating SizeOfImage THEN the generator SHALL use rounded size of headers plus all sections
+6. WHEN setting SizeOfHeaders THEN the generator SHALL use properly aligned header size
+7. WHEN creating .reloc section THEN the generator SHALL write proper relocation entries or keep relocations in headers
+8. WHEN emitting sections THEN the generator SHALL include .text (code), .data (if needed), .rdata (constants/strings), and .idata (import table)
+9. WHEN setting .idata section THEN the generator SHALL include at least ExitProcess from KERNEL32.dll
+10. WHEN setting Characteristics THEN the generator SHALL include executable, large address aware, line numbers stripped, and debug info stripped flags
+
 ### Requirement 4: Improve Error Handling and Validation
 
 **User Story:** As a developer, I want clear error messages when assembly or generation fails, so that I can quickly identify and fix issues in my code.

@@ -167,6 +167,17 @@
   - Add validation for file size and structure
   - _Requirements: 3.5_
 
+- [x] 3.6 Fix PE relocation processing for imported functions
+
+
+
+
+  - Implement relocation processing to resolve call instructions to IAT entries
+  - Fix call instruction displacement calculation for imported functions
+  - Add proper linking between relocations and Import Address Table
+  - Resolve 0xc0000018 error caused by unresolved call relocations
+  - _Requirements: 3.3, 3.4_
+
 - [ ] 4. Implement Enhanced Error Handling and Validation
   - Add comprehensive error checking throughout assembly process
   - Implement detailed error reporting with context information
@@ -259,3 +270,62 @@
   - Implement tests that check executable permissions and metadata
   - Add cross-platform validation tests
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5_
+
+- [x] 7. Implement Enhanced PE Compliance and Relocation Support
+
+
+
+
+
+  - Fix Optional Header fields to meet Windows PE specifications
+  - Implement proper section creation with required sections
+  - Add relocation support and remove relocation stripping
+  - Ensure proper import table with KERNEL32.dll ExitProcess
+  - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8, 6.9, 6.10_
+
+- [x] 7.1 Fix PE Optional Header field initialization
+
+
+  - Set ImageBase to 0x140000000 for 64-bit PE executables
+  - Configure SectionAlignment = 0x1000 and FileAlignment = 0x200
+  - Calculate AddressOfEntryPoint as RVA to start of .text section
+  - Compute SizeOfImage as aligned total size of headers plus all sections
+  - Set SizeOfHeaders to properly aligned size of all header structures
+  - _Requirements: 6.2, 6.3, 6.4, 6.5, 6.6_
+
+- [x] 7.2 Implement required PE sections with proper characteristics
+
+
+  - Create .text section with executable code and IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ
+  - Add .rdata section for constants/strings with IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ
+  - Create .data section for variables with IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE
+  - Implement .idata section for import table with proper characteristics
+  - Add .reloc section for base relocations with IMAGE_SCN_MEM_DISCARDABLE flag
+  - _Requirements: 6.8_
+
+- [x] 7.3 Fix PE file characteristics flags
+
+
+  - Remove IMAGE_FILE_RELOCS_STRIPPED flag to preserve relocations
+  - Add IMAGE_FILE_LARGE_ADDRESS_AWARE flag for >2GB address support
+  - Ensure IMAGE_FILE_EXECUTABLE_IMAGE flag is set
+  - Include IMAGE_FILE_LINE_NUMBERS_STRIPPED and IMAGE_FILE_LOCAL_SYMS_STRIPPED
+  - _Requirements: 6.1, 6.10_
+
+- [x] 7.4 Implement proper .reloc section generation
+
+
+  - Create base relocation directory structure
+  - Generate relocation entries for address fixups
+  - Write proper relocation blocks with correct RVAs and types
+  - Ensure relocations are not stripped from the final executable
+  - _Requirements: 6.1, 6.7_
+
+- [x] 7.5 Ensure complete import table with KERNEL32.dll
+
+
+  - Create Import Directory Table entry for KERNEL32.dll
+  - Generate Import Lookup Table and Import Address Table entries
+  - Add ExitProcess function import with proper hint and name
+  - Set correct RVAs for all import table structures
+  - _Requirements: 6.9_

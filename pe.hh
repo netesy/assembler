@@ -89,8 +89,14 @@ constexpr uint64_t SECTION_ALIGNMENT = 0x1000;
 constexpr uint64_t FILE_ALIGNMENT = 0x200;
 constexpr uint32_t DOS_STUB_SIZE = 64;
 
-// COFF-specific constants
+// Additional PE file characteristics
+constexpr uint16_t IMAGE_FILE_RELOCS_STRIPPED = 0x0001;
+constexpr uint16_t IMAGE_FILE_LINE_NUMBERS_STRIPPED = 0x0004;
+constexpr uint16_t IMAGE_FILE_LOCAL_SYMS_STRIPPED = 0x0008;
 constexpr uint16_t IMAGE_FILE_LARGE_ADDRESS_AWARE = 0x0020;
+constexpr uint32_t IMAGE_SCN_MEM_DISCARDABLE = 0x02000000;
+
+// COFF-specific constants
 constexpr uint8_t IMAGE_SYM_CLASS_EXTERNAL = 2;
 constexpr uint8_t IMAGE_SYM_CLASS_STATIC = 3;
 constexpr int16_t IMAGE_SYM_DEBUG = -2;
