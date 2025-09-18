@@ -1,6 +1,7 @@
 #include "assembler.hh"
 #include "elf.hh"
 #include "pe.hh"
+#include "platform_utils.hh"
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -15,9 +16,11 @@ bool generateElf(Assembler& assembler, const std::string& inputFilename, const s
     std::string finalOutputFile = outputFilename;
 
     if (!std::filesystem::path(finalOutputFile).has_extension()) {
-
         finalOutputFile += (generateRelocatable ? ".o" : ".elf");
     }
+    
+    // Normalize the output path for the current platform
+    finalOutputFile = PlatformUtils::normalizePath(finalOutputFile);
     if (!elfGen.generateElfWithAllSections(
             assembler.getTextSection(),
             finalOutputFile,
@@ -37,7 +40,10 @@ bool generateElf(Assembler& assembler, const std::string& inputFilename, const s
     }
 
     std::cout << "File generated successfully: " << finalOutputFile << "\n";
+    
+    // Set executable permissions on Unix-like systems
     if (!generateRelocatable) {
+        PlatformUtils::setExecutablePermissions(finalOutputFile);
         std::cout << "\nThis executable demonstrates:\n"
                   << "  - Multiple sections (.text, .data, .bss, .rodata)\n"
                   << "  - Explicit operand sizing (byte/word/dword/qword ptr)\n"
@@ -71,20 +77,33 @@ bool generatePe(PEGenerator& peGen, Assembler& assembler, const std::string& out
     std::string finalOutputFile = outputFilename;
 
     if (!std::filesystem::path(finalOutputFile).has_extension()) {
-
-        finalOutputFile += ".exe";
+        finalOutputFile += PlatformUtils::getExecutableExtension();
+        if (finalOutputFile.back() == '.') {
+            finalOutputFile += "exe"; // Fallback for non-Windows platforms
+        }
     }
+    
+    // Normalize the output path for the current platform
+    finalOutputFile = PlatformUtils::normalizePath(finalOutputFile);
 
     if (!peGen.generateExecutable(finalOutputFile, assembler)) {
          std::cerr << "PE generation failed: " << peGen.getLastError() << std::endl;
          return false;
     }
     std::cout << "File generated successfully: " << finalOutputFile << "\n";
+    
+    // Set executable permissions on Unix-like systems
+    PlatformUtils::setExecutablePermissions(finalOutputFile);
     return true;
 }
 
 
 int main(int argc, char* argv[]) {
+    // Validate system compatibility on startup
+    if (!PlatformUtils::validateStructurePacking()) {
+        std::cerr << "Warning: System may have structure packing issues" << std::endl;
+    }
+    
     bool generateRelocatable = false;
     std::string inputFilename;
     std::string outputFilename;
@@ -136,27 +155,41 @@ int main(int argc, char* argv[]) {
                                  std::istreambuf_iterator<char>());
 
     if (format == "default") {
-        cout << "No format specified, generating for both ELF and PE..." << endl;
+        // Use platform-appropriate default format
+        format = PlatformUtils::getDefaultOutputFormat();
+        cout << "No format specified, using platform default: " << format << endl;
 
-        Assembler elf_assembler("elf", generateRelocatable ? 0 : 0x400000, generateRelocatable ? 0 : 0x600000);
-        if (!elf_assembler.assemble(asmCodeFromFile, outputFilename)) {
-            std::cerr << "Assembly for ELF failed" << std::endl;
-            return 1;
-        }
-        elf_assembler.printDebugInfo();
-        if(!generateElf(elf_assembler, inputFilename, outputFilename, generateRelocatable)) {
-            return 1;
-        }
-
-        Assembler pe_assembler("pe", generateRelocatable ? 0 : 0x400000, generateRelocatable ? 0 : 0x600000);
-        if (!pe_assembler.assemble(asmCodeFromFile, outputFilename)) {
-            std::cerr << "Assembly for PE failed" << std::endl;
-            return 1;
-        }
-        pe_assembler.printDebugInfo();
-        PEGenerator pe_gen(true);
-        if(!generatePe(pe_gen, pe_assembler, outputFilename)) {
-            return 1;
+        // Generate for the detected platform format
+        if (format == "elf") {
+            Assembler assembler("elf", generateRelocatable ? 0 : 0x400000, generateRelocatable ? 0 : 0x600000);
+            if (!assembler.assemble(asmCodeFromFile, outputFilename)) {
+                std::cerr << "Assembly failed" << std::endl;
+                return 1;
+            }
+            assembler.printDebugInfo();
+            if (!generateElf(assembler, inputFilename, outputFilename, generateRelocatable)) {
+                return 1;
+            }
+        } else if (format == "pe") {
+            Assembler assembler("pe");
+            if (!assembler.assemble(asmCodeFromFile, outputFilename)) {
+                std::cerr << "Assembly failed" << std::endl;
+                return 1;
+            }
+            assembler.printDebugInfo();
+            PEGenerator pe_generator(true); // 64-bit
+            if (generateRelocatable) {
+                if (!pe_generator.generateObjectFile(outputFilename, assembler)) {
+                    std::cerr << "COFF object generation failed: " << pe_generator.getLastError() << std::endl;
+                    return 1;
+                }
+                std::cout << "File generated successfully: " << outputFilename << std::endl;
+            } else {
+                if(!generatePe(pe_generator, assembler, outputFilename)) {
+                    std::cerr << "PE generation failed" << std::endl;
+                    return 1;
+                }
+            }
         }
 
     } else if (format == "elf") {

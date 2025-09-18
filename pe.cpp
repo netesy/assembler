@@ -1,4 +1,5 @@
 #include "pe.hh"
+#include "platform_utils.hh"
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -9,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <ctime>
+#include <ios>
 
 
 #pragma pack(push, 1)
@@ -241,6 +243,9 @@ public:
             // Now that layout is final, generate the import directory with the correct RVAs.
             setupImports();
 
+            // Validate the complete file structure before writing
+            validateFileStructure();
+
             std::ofstream file(outputFile, std::ios::binary);
             if (!file) {
                 lastError_ = "Cannot create output file: " + outputFile;
@@ -467,6 +472,159 @@ private:
     uint32_t importDirectoryRVA_ = 0;
     std::vector<COFFSymbol> coffSymbols_;
     std::vector<char> stringTable_;
+    
+    // Helper functions for RVA calculations and validation
+    uint32_t fileOffsetToRVA(uint32_t fileOffset) {
+        for (const auto& section : sections_) {
+            if (fileOffset >= section.rawDataPointer && 
+                fileOffset < section.rawDataPointer + section.rawDataSize) {
+                uint32_t offsetInSection = fileOffset - section.rawDataPointer;
+                return section.virtualAddress + offsetInSection;
+            }
+        }
+        return 0; // Invalid
+    }
+    
+    uint32_t rvaToFileOffset(uint32_t rva) {
+        for (const auto& section : sections_) {
+            if (rva >= section.virtualAddress && 
+                rva < section.virtualAddress + section.virtualSize) {
+                uint32_t offsetInSection = rva - section.virtualAddress;
+                return section.rawDataPointer + offsetInSection;
+            }
+        }
+        return 0; // Invalid
+    }
+    
+    bool validateRVA(uint32_t rva) {
+        if (rva == 0) return false;
+        for (const auto& section : sections_) {
+            if (rva >= section.virtualAddress && 
+                rva < section.virtualAddress + section.virtualSize) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    void setupDataDirectories(DataDirectory* dataDirectories) {
+        // Initialize all data directories to zero
+        memset(dataDirectories, 0, 16 * sizeof(DataDirectory));
+        
+        // Data Directory indices (from winnt.h)
+        const int IMAGE_DIRECTORY_ENTRY_EXPORT = 0;
+        const int IMAGE_DIRECTORY_ENTRY_IMPORT = 1;
+        const int IMAGE_DIRECTORY_ENTRY_RESOURCE = 2;
+        const int IMAGE_DIRECTORY_ENTRY_EXCEPTION = 3;
+        const int IMAGE_DIRECTORY_ENTRY_SECURITY = 4;
+        const int IMAGE_DIRECTORY_ENTRY_BASERELOC = 5;
+        const int IMAGE_DIRECTORY_ENTRY_DEBUG = 6;
+        const int IMAGE_DIRECTORY_ENTRY_ARCHITECTURE = 7;
+        const int IMAGE_DIRECTORY_ENTRY_GLOBALPTR = 8;
+        const int IMAGE_DIRECTORY_ENTRY_TLS = 9;
+        const int IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10;
+        const int IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT = 11;
+        const int IMAGE_DIRECTORY_ENTRY_IAT = 12;
+        const int IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT = 13;
+        const int IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR = 14;
+        
+        // Set up Import Directory
+        if (importDirectoryRVA_ > 0) {
+            if (!validateRVA(importDirectoryRVA_)) {
+                throw std::runtime_error("Invalid import directory RVA: " + std::to_string(importDirectoryRVA_));
+            }
+            
+            uint32_t importSize = calculateImportDirectorySize();
+            if (importSize == 0) {
+                throw std::runtime_error("Import directory size is zero");
+            }
+            
+            // Validate that the entire import directory fits within a section
+            if (!validateRVA(importDirectoryRVA_ + importSize - 1)) {
+                throw std::runtime_error("Import directory extends beyond section boundaries");
+            }
+            
+            dataDirectories[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = importDirectoryRVA_;
+            dataDirectories[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = importSize;
+            
+            // Set up Import Address Table (IAT) directory
+            // The IAT is part of the import directory structure
+            Section* rdata = findSection(".rdata");
+            if (rdata) {
+                // Calculate IAT RVA - it comes after the IDT and ILTs in our layout
+                uint32_t idt_size = (imports_.size() + 1) * sizeof(ImportDirectoryTable);
+                uint32_t total_ilt_size = 0;
+                uint32_t thunk_size = is64Bit_ ? sizeof(uint64_t) : sizeof(uint32_t);
+                
+                for (const auto& pair : imports_) {
+                    total_ilt_size += (pair.second.size() + 1) * thunk_size;
+                }
+                
+                uint32_t iat_rva = importDirectoryRVA_ + idt_size + total_ilt_size;
+                if (validateRVA(iat_rva)) {
+                    dataDirectories[IMAGE_DIRECTORY_ENTRY_IAT].VirtualAddress = iat_rva;
+                    dataDirectories[IMAGE_DIRECTORY_ENTRY_IAT].Size = total_ilt_size;
+                }
+            }
+        }
+        
+        // TODO: Add other data directories as needed:
+        // - Export Directory (if we have exports)
+        // - Resource Directory (if we have resources)
+        // - Exception Directory (for 64-bit)
+        // - Base Relocation Directory (if we need relocations)
+        // - Debug Directory (if we have debug info)
+        // - TLS Directory (if we use thread-local storage)
+    }
+    
+    void validateFileStructure() {
+        // Validate that we have at least a .text section
+        if (!findSection(".text")) {
+            throw std::runtime_error("PE file must have a .text section");
+        }
+        
+        // Validate section order and alignment
+        uint32_t lastVirtualEnd = 0;
+        uint32_t lastFileEnd = 0;
+        
+        for (const auto& section : sections_) {
+            // Check virtual address ordering and alignment
+            if (section.virtualAddress < lastVirtualEnd) {
+                throw std::runtime_error("Section " + section.name + " virtual address is not in ascending order");
+            }
+            
+            if (section.virtualAddress % sectionAlignment_ != 0) {
+                throw std::runtime_error("Section " + section.name + " virtual address not aligned");
+            }
+            
+            // Check file offset ordering and alignment (for sections with file data)
+            if (section.rawDataSize > 0) {
+                if (section.rawDataPointer < lastFileEnd) {
+                    throw std::runtime_error("Section " + section.name + " file offset is not in ascending order");
+                }
+                
+                if (section.rawDataPointer % fileAlignment_ != 0) {
+                    throw std::runtime_error("Section " + section.name + " file offset not aligned");
+                }
+                
+                lastFileEnd = section.rawDataPointer + section.rawDataSize;
+            }
+            
+            lastVirtualEnd = section.virtualAddress + align(section.virtualSize, sectionAlignment_);
+        }
+        
+        // Validate import directory if present
+        if (importDirectoryRVA_ > 0) {
+            if (!validateRVA(importDirectoryRVA_)) {
+                throw std::runtime_error("Import directory RVA is invalid");
+            }
+            
+            uint32_t importSize = calculateImportDirectorySize();
+            if (!validateRVA(importDirectoryRVA_ + importSize - 1)) {
+                throw std::runtime_error("Import directory extends beyond section boundaries");
+            }
+        }
+    }
 
     void validateOptions() {
         if (sectionAlignment_ < fileAlignment_) {
@@ -508,18 +666,121 @@ private:
     }
 
     void layoutSections() {
-        uint32_t headerSize = sizeof(DOSHeader) + sizeof(uint32_t) + (is64Bit_ ? sizeof(NTHeaders64) : sizeof(NTHeaders32)) + (sections_.size() * sizeof(SectionHeader));
+        // Calculate header size including all components
+        uint32_t headerSize = sizeof(DOSHeader) + DOS_STUB_SIZE + sizeof(uint32_t) + sizeof(FileHeader) + 
+                             (is64Bit_ ? sizeof(OptionalHeader64) : sizeof(OptionalHeader32)) + 
+                             (sections_.size() * sizeof(SectionHeader));
+        
+        // Align to section boundary for virtual addresses, file boundary for file offsets
         uint32_t currentRVA = align(headerSize, sectionAlignment_);
         uint32_t currentRawPtr = align(headerSize, fileAlignment_);
 
         for (auto& section : sections_) {
+            // Validate section alignment requirements
+            if (sectionAlignment_ < fileAlignment_) {
+                throw std::runtime_error("Section alignment must be >= file alignment");
+            }
+            
+            // Set virtual address (RVA)
             section.virtualAddress = currentRVA;
+            
+            // Set file pointer for raw data
             section.rawDataPointer = currentRawPtr;
-            section.rawDataSize = align(section.data.size(), fileAlignment_);
-
-            currentRVA += align(section.virtualSize, sectionAlignment_);
-            currentRawPtr += section.rawDataSize;
+            
+            // Calculate raw data size (file-aligned)
+            if (section.data.empty() && section.virtualSize == 0) {
+                section.rawDataSize = 0;  // No data to write (e.g., .bss)
+            } else {
+                uint32_t dataSize = std::max(static_cast<uint32_t>(section.data.size()), section.virtualSize);
+                section.rawDataSize = align(dataSize, fileAlignment_);
+            }
+            
+            // Ensure virtual size is set correctly
+            if (section.virtualSize == 0) {
+                section.virtualSize = section.data.size();
+            }
+            
+            // Validate section characteristics
+            validateSectionCharacteristics(section);
+            
+            // Move to next section positions
+            uint32_t nextRVA = currentRVA + align(section.virtualSize, sectionAlignment_);
+            uint32_t nextRawPtr = currentRawPtr;
+            
+            if (section.rawDataSize > 0) {
+                nextRawPtr = currentRawPtr + section.rawDataSize;
+            }
+            
+            // Validate no overlaps with previous sections
+            for (const auto& prevSection : sections_) {
+                if (&prevSection == &section) break; // Don't compare with self
+                
+                // Check virtual address overlap
+                if (section.virtualAddress < prevSection.virtualAddress + align(prevSection.virtualSize, sectionAlignment_) &&
+                    prevSection.virtualAddress < section.virtualAddress + align(section.virtualSize, sectionAlignment_)) {
+                    throw std::runtime_error("Virtual address overlap between sections " + prevSection.name + " and " + section.name);
+                }
+                
+                // Check file offset overlap (only for sections with file data)
+                if (section.rawDataSize > 0 && prevSection.rawDataSize > 0) {
+                    if (section.rawDataPointer < prevSection.rawDataPointer + prevSection.rawDataSize &&
+                        prevSection.rawDataPointer < section.rawDataPointer + section.rawDataSize) {
+                        throw std::runtime_error("File offset overlap between sections " + prevSection.name + " and " + section.name);
+                    }
+                }
+            }
+            
+            currentRVA = nextRVA;
+            currentRawPtr = nextRawPtr;
         }
+        
+        // Final validation: ensure all sections fit within reasonable bounds
+        for (const auto& section : sections_) {
+            if (section.virtualAddress + section.virtualSize > 0x80000000) { // 2GB limit
+                throw std::runtime_error("Section " + section.name + " virtual address exceeds reasonable bounds");
+            }
+            
+            if (section.rawDataPointer + section.rawDataSize > 0x40000000) { // 1GB file size limit
+                throw std::runtime_error("Section " + section.name + " file size exceeds reasonable bounds");
+            }
+        }
+    }
+    
+    void validateSectionCharacteristics(const Section& section) {
+        uint32_t chars = section.characteristics;
+        
+        // Validate that sections have appropriate characteristics
+        if (section.name == ".text") {
+            if (!(chars & IMAGE_SCN_CNT_CODE) || !(chars & IMAGE_SCN_MEM_EXECUTE)) {
+                throw std::runtime_error(".text section must have CODE and EXECUTE characteristics");
+            }
+        } else if (section.name == ".data") {
+            if (!(chars & IMAGE_SCN_CNT_INITIALIZED_DATA) || !(chars & IMAGE_SCN_MEM_WRITE)) {
+                throw std::runtime_error(".data section must have INITIALIZED_DATA and WRITE characteristics");
+            }
+        } else if (section.name == ".rdata") {
+            if (!(chars & IMAGE_SCN_CNT_INITIALIZED_DATA) || (chars & IMAGE_SCN_MEM_WRITE)) {
+                throw std::runtime_error(".rdata section must have INITIALIZED_DATA but not WRITE characteristics");
+            }
+        } else if (section.name == ".bss") {
+            if (!(chars & IMAGE_SCN_CNT_UNINITIALIZED_DATA) || !(chars & IMAGE_SCN_MEM_WRITE)) {
+                throw std::runtime_error(".bss section must have UNINITIALIZED_DATA and WRITE characteristics");
+            }
+        }
+        
+        // Validate alignment requirements
+        if (chars & IMAGE_SCN_ALIGN_1BYTES) {
+            // 1-byte alignment is valid
+        } else if (chars & IMAGE_SCN_ALIGN_2BYTES) {
+            // 2-byte alignment is valid
+        } else if (chars & IMAGE_SCN_ALIGN_4BYTES) {
+            // 4-byte alignment is valid
+        } else if (chars & IMAGE_SCN_ALIGN_8BYTES) {
+            // 8-byte alignment is valid
+        } else if (chars & IMAGE_SCN_ALIGN_16BYTES) {
+            // 16-byte alignment is valid
+        }
+        // Add more alignment checks as needed
     }
 
     void setupImports() {
@@ -541,6 +802,11 @@ private:
 
         // The RVA of the import directory is now final and correct.
         importDirectoryRVA_ = rdata->virtualAddress + import_data_offset_in_section;
+        
+        // Validate the import directory RVA
+        if (!validateRVA(importDirectoryRVA_)) {
+            throw std::runtime_error("Invalid import directory RVA calculated: " + std::to_string(importDirectoryRVA_));
+        }
 
         std::vector<uint8_t> import_directory_data = createImportDirectory();
 
@@ -561,103 +827,182 @@ private:
     uint32_t calculateImportDirectorySize() {
         if (imports_.empty()) return 0;
 
-        uint32_t size = (imports_.size() + 1) * sizeof(ImportDirectoryTable);
-
         uint32_t thunk_size = is64Bit_ ? sizeof(uint64_t) : sizeof(uint32_t);
-
-        uint32_t lookup_and_address_table_size = 0;
-        uint32_t hint_name_table_size = 0;
+        
+        // Import Directory Table (including null terminator)
+        uint32_t idt_size = (imports_.size() + 1) * sizeof(ImportDirectoryTable);
+        
+        // Import Lookup Tables and Import Address Tables
+        uint32_t total_ilt_size = 0;
+        uint32_t total_iat_size = 0;
+        
+        // Names (module names + function hint/name entries)
+        uint32_t total_names_size = 0;
 
         for (const auto& pair : imports_) {
-            lookup_and_address_table_size += (pair.second.size() + 1) * thunk_size; // For ILT
-            lookup_and_address_table_size += (pair.second.size() + 1) * thunk_size; // For IAT
+            // ILT and IAT sizes (each function + null terminator)
+            uint32_t dll_table_size = (pair.second.size() + 1) * thunk_size;
+            total_ilt_size += dll_table_size;
+            total_iat_size += dll_table_size;
 
-            hint_name_table_size += pair.first.size() + 1; // Module name
+            // Module name
+            total_names_size += pair.first.size() + 1;
+            
+            // Function hint/name entries
             for (const auto& funcName : pair.second) {
-                size_t hint_name_size = sizeof(uint16_t) + funcName.size() + 1;
-                if (hint_name_size % 2 != 0) hint_name_size++;
-                hint_name_table_size += hint_name_size;
+                uint32_t hint_name_size = sizeof(uint16_t) + funcName.size() + 1; // hint + name + null
+                if (hint_name_size % 2 != 0) hint_name_size++; // Align to 2-byte boundary
+                total_names_size += hint_name_size;
             }
         }
-        return size + lookup_and_address_table_size + hint_name_table_size;
+        
+        return idt_size + total_ilt_size + total_iat_size + total_names_size;
     }
 
     std::vector<uint8_t> createImportDirectory() {
         if (imports_.empty()) return {};
 
         // Layout:
-        // 1. Import Directory Table (IDT)
-        // 2. Import Lookup Tables (ILTs)
-        // 3. Import Address Tables (IATs) - A copy of ILTs initially
-        // 4. Hint/Name data (function names and module names)
+        // 1. Import Directory Table (IDT) - includes null terminator
+        // 2. Import Lookup Tables (ILTs) for each DLL
+        // 3. Import Address Tables (IATs) for each DLL - initially copies of ILTs
+        // 4. Module names (DLL names)
+        // 5. Hint/Name data (function names with hints)
 
         uint32_t thunk_size = is64Bit_ ? sizeof(uint64_t) : sizeof(uint32_t);
 
-        // Calculate offsets
-        uint32_t idt_size = (imports_.size() + 1) * sizeof(ImportDirectoryTable);
-
-        uint32_t ilts_base_offset = idt_size;
-        uint32_t iats_base_offset = 0;
-        uint32_t names_base_offset = 0;
-
+        // Calculate structure sizes
+        uint32_t idt_size = (imports_.size() + 1) * sizeof(ImportDirectoryTable); // +1 for null terminator
+        
         uint32_t total_ilt_size = 0;
+        uint32_t total_names_size = 0;
+        
         for (const auto& pair : imports_) {
+            // Each ILT needs space for function pointers + null terminator
             total_ilt_size += (pair.second.size() + 1) * thunk_size;
+            
+            // Module name
+            total_names_size += pair.first.size() + 1;
+            
+            // Function names with hints (aligned to 2-byte boundaries)
+            for (const auto& funcName : pair.second) {
+                uint32_t hint_name_size = sizeof(uint16_t) + funcName.size() + 1; // hint + name + null
+                if (hint_name_size % 2 != 0) hint_name_size++; // Align to 2-byte boundary
+                total_names_size += hint_name_size;
+            }
         }
-        iats_base_offset = ilts_base_offset + total_ilt_size;
-        names_base_offset = iats_base_offset + total_ilt_size;
+        
+        // Calculate offsets for each section
+        uint32_t ilts_offset = idt_size;
+        uint32_t iats_offset = ilts_offset + total_ilt_size;
+        uint32_t module_names_offset = iats_offset + total_ilt_size;
+        uint32_t hint_names_offset = module_names_offset;
+        
+        // Pre-calculate module name positions
+        std::vector<uint32_t> module_name_offsets;
+        uint32_t current_module_offset = module_names_offset;
+        for (const auto& pair : imports_) {
+            module_name_offsets.push_back(current_module_offset);
+            current_module_offset += pair.first.size() + 1;
+        }
+        hint_names_offset = current_module_offset;
 
         uint32_t total_size = calculateImportDirectorySize();
         std::vector<uint8_t> data(total_size, 0);
 
-        uint32_t idt_offset = 0;
-        uint32_t ilt_offset = ilts_base_offset;
-        uint32_t iat_offset = iats_base_offset;
-        uint32_t name_offset = names_base_offset;
+        // Track current positions
+        uint32_t idt_pos = 0;
+        uint32_t ilt_pos = ilts_offset;
+        uint32_t iat_pos = iats_offset;
+        uint32_t hint_name_pos = hint_names_offset;
+        
+        size_t module_index = 0;
 
+        // Build import directory for each DLL
         for (const auto& pair : imports_) {
             const std::string& moduleName = pair.first;
             const std::vector<std::string>& functionNames = pair.second;
 
-            uint32_t current_ilt_start_offset = ilt_offset;
-
-            // --- Fill ILT and prepare Hint/Name data ---
-            for (const auto& funcName : functionNames) {
-                uint32_t hint_name_rva = importDirectoryRVA_ + name_offset;
-
-                if (is64Bit_) write_to_vector<uint64_t>(data, ilt_offset, hint_name_rva);
-                else write_to_vector<uint32_t>(data, ilt_offset, hint_name_rva);
-                ilt_offset += thunk_size;
-
-                // Write Hint/Name data
-                write_to_vector<uint16_t>(data, name_offset, 0); // Hint
-                memcpy(data.data() + name_offset + 2, funcName.c_str(), funcName.size() + 1);
-                size_t hint_name_size = 2 + funcName.size() + 1;
-                if (hint_name_size % 2 != 0) {
-                    name_offset += hint_name_size + 1;
-                } else {
-                    name_offset += hint_name_size;
+            uint32_t current_ilt_start = ilt_pos;
+            uint32_t current_iat_start = iat_pos;
+            
+            // Build ILT entries for this DLL
+            std::vector<uint32_t> function_name_rvas;
+            for (size_t i = 0; i < functionNames.size(); ++i) {
+                const auto& funcName = functionNames[i];
+                
+                // Calculate RVA for this function's hint/name entry
+                uint32_t hint_name_rva = importDirectoryRVA_ + hint_name_pos;
+                
+                // Validate the RVA
+                if (!validateRVA(hint_name_rva)) {
+                    throw std::runtime_error("Invalid hint/name RVA for function " + funcName + ": " + std::to_string(hint_name_rva));
                 }
+                
+                function_name_rvas.push_back(hint_name_rva);
+                
+                // Write hint/name entry
+                uint16_t hint = static_cast<uint16_t>(i); // Use index as hint
+                write_to_vector<uint16_t>(data, hint_name_pos, hint);
+                hint_name_pos += sizeof(uint16_t);
+                
+                // Write function name
+                memcpy(data.data() + hint_name_pos, funcName.c_str(), funcName.size() + 1);
+                hint_name_pos += funcName.size() + 1;
+                
+                // Align to 2-byte boundary
+                if (hint_name_pos % 2 != 0) {
+                    hint_name_pos++;
+                }
+                
+                // Write to ILT
+                if (is64Bit_) {
+                    write_to_vector<uint64_t>(data, ilt_pos, hint_name_rva);
+                } else {
+                    write_to_vector<uint32_t>(data, ilt_pos, hint_name_rva);
+                }
+                ilt_pos += thunk_size;
             }
-            ilt_offset += thunk_size; // Null terminator for ILT
-
-            // --- Fill IDT entry ---
-            ImportDirectoryTable idt = {};
-            idt.ImportLookupTableRVA = importDirectoryRVA_ + current_ilt_start_offset;
-            idt.ImportAddressTableRVA = importDirectoryRVA_ + iat_offset;
-            idt.NameRVA = importDirectoryRVA_ + name_offset;
-            memcpy(data.data() + idt_offset, &idt, sizeof(idt));
-            idt_offset += sizeof(idt);
+            
+            // Add null terminator to ILT
+            ilt_pos += thunk_size; // Already zero-initialized
+            
+            // Copy ILT to IAT
+            uint32_t ilt_size = (functionNames.size() + 1) * thunk_size;
+            memcpy(data.data() + iat_pos, data.data() + current_ilt_start, ilt_size);
+            iat_pos += ilt_size;
 
             // Write module name
-            memcpy(data.data() + name_offset, moduleName.c_str(), moduleName.size() + 1);
-            name_offset += moduleName.size() + 1;
+            uint32_t module_name_offset = module_name_offsets[module_index];
+            memcpy(data.data() + module_name_offset, moduleName.c_str(), moduleName.size() + 1);
 
-            // --- Copy ILT to IAT ---
-            memcpy(data.data() + iat_offset, data.data() + current_ilt_start_offset, (functionNames.size() + 1) * thunk_size);
-            iat_offset += (functionNames.size() + 1) * thunk_size;
+            // Fill Import Directory Table entry
+            ImportDirectoryTable idt = {};
+            idt.ImportLookupTableRVA = importDirectoryRVA_ + current_ilt_start;
+            idt.ImportAddressTableRVA = importDirectoryRVA_ + current_iat_start;
+            idt.NameRVA = importDirectoryRVA_ + module_name_offset;
+            idt.TimeDateStamp = 0;
+            idt.ForwarderChain = 0;
+            
+            // Validate all RVAs in the IDT entry
+            if (!validateRVA(idt.ImportLookupTableRVA)) {
+                throw std::runtime_error("Invalid ILT RVA for module " + moduleName + ": " + std::to_string(idt.ImportLookupTableRVA));
+            }
+            if (!validateRVA(idt.ImportAddressTableRVA)) {
+                throw std::runtime_error("Invalid IAT RVA for module " + moduleName + ": " + std::to_string(idt.ImportAddressTableRVA));
+            }
+            if (!validateRVA(idt.NameRVA)) {
+                throw std::runtime_error("Invalid name RVA for module " + moduleName + ": " + std::to_string(idt.NameRVA));
+            }
+            
+            memcpy(data.data() + idt_pos, &idt, sizeof(idt));
+            idt_pos += sizeof(idt);
+            
+            module_index++;
         }
 
+        // The final IDT entry is already zero-initialized (null terminator)
+        
         return data;
     }
 
@@ -707,9 +1052,34 @@ private:
 
     void writeDOSHeader(std::ofstream& file) {
         DOSHeader dosHeader = {};
-        dosHeader.e_magic = IMAGE_DOS_SIGNATURE;
-        dosHeader.e_lfanew = sizeof(DOSHeader);
+        dosHeader.e_magic = IMAGE_DOS_SIGNATURE;  // "MZ"
+        dosHeader.e_cblp = 0x90;                  // Bytes on last page
+        dosHeader.e_cp = 0x03;                    // Pages in file
+        dosHeader.e_crlc = 0x00;                  // Relocations
+        dosHeader.e_cparhdr = 0x04;               // Size of header in paragraphs
+        dosHeader.e_minalloc = 0x00;              // Minimum extra paragraphs
+        dosHeader.e_maxalloc = 0xFFFF;            // Maximum extra paragraphs
+        dosHeader.e_ss = 0x00;                    // Initial relative SS value
+        dosHeader.e_sp = 0xB8;                    // Initial SP value
+        dosHeader.e_csum = 0x00;                  // Checksum
+        dosHeader.e_ip = 0x00;                    // Initial IP value
+        dosHeader.e_cs = 0x00;                    // Initial relative CS value
+        dosHeader.e_lfarlc = 0x40;                // File address of relocation table
+        dosHeader.e_ovno = 0x00;                  // Overlay number
+        // e_res[4] and e_res2[10] are already zero-initialized
+        dosHeader.e_lfanew = sizeof(DOSHeader) + DOS_STUB_SIZE;  // Offset to NT headers
+        
         file.write(reinterpret_cast<const char*>(&dosHeader), sizeof(dosHeader));
+        
+        // Write DOS stub - a minimal program that prints "This program cannot be run in DOS mode"
+        const uint8_t dosStub[] = {
+            0x0E, 0x1F, 0xBA, 0x0E, 0x00, 0xB4, 0x09, 0xCD, 0x21, 0xB8, 0x01, 0x4C, 0xCD, 0x21, 0x54, 0x68,
+            0x69, 0x73, 0x20, 0x70, 0x72, 0x6F, 0x67, 0x72, 0x61, 0x6D, 0x20, 0x63, 0x61, 0x6E, 0x6E, 0x6F,
+            0x74, 0x20, 0x62, 0x65, 0x20, 0x72, 0x75, 0x6E, 0x20, 0x69, 0x6E, 0x20, 0x44, 0x4F, 0x53, 0x20,
+            0x6D, 0x6F, 0x64, 0x65, 0x2E, 0x0D, 0x0D, 0x0A, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        static_assert(sizeof(dosStub) == DOS_STUB_SIZE, "DOS stub size mismatch");
+        file.write(reinterpret_cast<const char*>(dosStub), sizeof(dosStub));
     }
 
     void writeNTHeaders(std::ofstream& file) {
@@ -719,9 +1089,11 @@ private:
         FileHeader fileHeader = {};
         fileHeader.Machine = is64Bit_ ? IMAGE_FILE_MACHINE_AMD64 : IMAGE_FILE_MACHINE_I386;
         fileHeader.NumberOfSections = sections_.size();
-        fileHeader.TimeDateStamp = time(nullptr);
+        fileHeader.TimeDateStamp = static_cast<uint32_t>(time(nullptr));
         fileHeader.SizeOfOptionalHeader = is64Bit_ ? sizeof(OptionalHeader64) : sizeof(OptionalHeader32);
-        fileHeader.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE;
+        fileHeader.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE | 
+                                   (is64Bit_ ? 0 : IMAGE_FILE_32BIT_MACHINE) |
+                                   0x0001;  // IMAGE_FILE_RELOCS_STRIPPED
 
         uint32_t lastSectionEnd = 0;
         for(const auto& s : sections_) {
@@ -734,66 +1106,530 @@ private:
 
         if (is64Bit_) {
             OptionalHeader64 optHeader = {};
-            optHeader.Magic = 0x20b;
+            optHeader.Magic = 0x20b;  // PE32+
+            optHeader.MajorLinkerVersion = 14;
+            optHeader.MinorLinkerVersion = 0;
             optHeader.ImageBase = baseAddress_;
             optHeader.SectionAlignment = sectionAlignment_;
             optHeader.FileAlignment = fileAlignment_;
             optHeader.MajorOperatingSystemVersion = 6;
+            optHeader.MinorOperatingSystemVersion = 0;
+            optHeader.MajorImageVersion = 0;
+            optHeader.MinorImageVersion = 0;
             optHeader.MajorSubsystemVersion = 6;
+            optHeader.MinorSubsystemVersion = 0;
+            optHeader.Win32VersionValue = 0;
             optHeader.Subsystem = subsystem_;
+            optHeader.DllCharacteristics = 0x8160;  // DYNAMIC_BASE | NX_COMPAT | NO_SEH | TERMINAL_SERVER_AWARE
             optHeader.SizeOfStackReserve = 0x100000;
             optHeader.SizeOfStackCommit = 0x1000;
+            optHeader.SizeOfHeapReserve = 0x100000;
+            optHeader.SizeOfHeapCommit = 0x1000;
+            optHeader.LoaderFlags = 0;
             optHeader.NumberOfRvaAndSizes = 16;
 
+            // Calculate sizes
+            uint32_t sizeOfCode = 0;
+            uint32_t sizeOfInitializedData = 0;
+            uint32_t sizeOfUninitializedData = 0;
+            
             Section* text = findSection(".text");
-            if(text) {
+            Section* data = findSection(".data");
+            Section* rdata = findSection(".rdata");
+            Section* bss = findSection(".bss");
+            
+            if (text) {
                 optHeader.BaseOfCode = text->virtualAddress;
+                sizeOfCode = align(text->virtualSize, fileAlignment_);
                 optHeader.AddressOfEntryPoint = text->virtualAddress;
-                if (entryPoint_ != 0) optHeader.AddressOfEntryPoint = entryPoint_;
+                if (entryPoint_ != 0) {
+                    optHeader.AddressOfEntryPoint = entryPoint_;
+                }
             }
+            
+            if (data) {
+                sizeOfInitializedData += align(data->virtualSize, fileAlignment_);
+            }
+            if (rdata) {
+                sizeOfInitializedData += align(rdata->virtualSize, fileAlignment_);
+            }
+            if (bss) {
+                sizeOfUninitializedData += align(bss->virtualSize, fileAlignment_);
+            }
+            
+            optHeader.SizeOfCode = sizeOfCode;
+            optHeader.SizeOfInitializedData = sizeOfInitializedData;
+            optHeader.SizeOfUninitializedData = sizeOfUninitializedData;
 
-            uint32_t sizeOfImage = 0;
-            uint32_t sizeOfHeaders = align(sizeof(DOSHeader) + sizeof(NTHeaders64) + sections_.size() * sizeof(SectionHeader), fileAlignment_);
-            for(const auto& s : sections_) sizeOfImage = s.virtualAddress + align(s.virtualSize, sectionAlignment_);
+            // Calculate SizeOfImage and SizeOfHeaders
+            uint32_t sizeOfHeaders = align(sizeof(DOSHeader) + DOS_STUB_SIZE + sizeof(uint32_t) + sizeof(FileHeader) + sizeof(OptionalHeader64) + sections_.size() * sizeof(SectionHeader), fileAlignment_);
+            uint32_t sizeOfImage = sizeOfHeaders;
+            for(const auto& s : sections_) {
+                uint32_t sectionEnd = s.virtualAddress + align(s.virtualSize, sectionAlignment_);
+                if (sectionEnd > sizeOfImage) {
+                    sizeOfImage = sectionEnd;
+                }
+            }
             optHeader.SizeOfImage = align(sizeOfImage, sectionAlignment_);
             optHeader.SizeOfHeaders = sizeOfHeaders;
+            optHeader.CheckSum = 0;  // Will be calculated later if needed
 
-            if(importDirectoryRVA_ > 0) {
-                optHeader.dataDirectory[1].VirtualAddress = importDirectoryRVA_;
-                optHeader.dataDirectory[1].Size = calculateImportDirectorySize();
-            }
+            // Set up data directories
+            setupDataDirectories(optHeader.dataDirectory);
 
             file.write(reinterpret_cast<const char*>(&optHeader), sizeof(optHeader));
         } else {
-            // 32-bit header not fully implemented
+            OptionalHeader32 optHeader = {};
+            optHeader.Magic = 0x10b;  // PE32
+            optHeader.MajorLinkerVersion = 14;
+            optHeader.MinorLinkerVersion = 0;
+            optHeader.ImageBase = static_cast<uint32_t>(baseAddress_);
+            optHeader.SectionAlignment = sectionAlignment_;
+            optHeader.FileAlignment = fileAlignment_;
+            optHeader.MajorOperatingSystemVersion = 6;
+            optHeader.MinorOperatingSystemVersion = 0;
+            optHeader.MajorImageVersion = 0;
+            optHeader.MinorImageVersion = 0;
+            optHeader.MajorSubsystemVersion = 6;
+            optHeader.MinorSubsystemVersion = 0;
+            optHeader.Win32VersionValue = 0;
+            optHeader.Subsystem = subsystem_;
+            optHeader.DllCharacteristics = 0x8160;  // DYNAMIC_BASE | NX_COMPAT | NO_SEH | TERMINAL_SERVER_AWARE
+            optHeader.SizeOfStackReserve = 0x100000;
+            optHeader.SizeOfStackCommit = 0x1000;
+            optHeader.SizeOfHeapReserve = 0x100000;
+            optHeader.SizeOfHeapCommit = 0x1000;
+            optHeader.LoaderFlags = 0;
+            optHeader.NumberOfRvaAndSizes = 16;
+
+            // Calculate sizes
+            uint32_t sizeOfCode = 0;
+            uint32_t sizeOfInitializedData = 0;
+            uint32_t sizeOfUninitializedData = 0;
+            
+            Section* text = findSection(".text");
+            Section* data = findSection(".data");
+            Section* rdata = findSection(".rdata");
+            Section* bss = findSection(".bss");
+            
+            if (text) {
+                optHeader.BaseOfCode = text->virtualAddress;
+                sizeOfCode = align(text->virtualSize, fileAlignment_);
+                optHeader.AddressOfEntryPoint = text->virtualAddress;
+                if (entryPoint_ != 0) {
+                    optHeader.AddressOfEntryPoint = static_cast<uint32_t>(entryPoint_);
+                }
+            }
+            
+            if (data) {
+                optHeader.BaseOfData = data->virtualAddress;
+                sizeOfInitializedData += align(data->virtualSize, fileAlignment_);
+            }
+            if (rdata) {
+                sizeOfInitializedData += align(rdata->virtualSize, fileAlignment_);
+            }
+            if (bss) {
+                sizeOfUninitializedData += align(bss->virtualSize, fileAlignment_);
+            }
+            
+            optHeader.SizeOfCode = sizeOfCode;
+            optHeader.SizeOfInitializedData = sizeOfInitializedData;
+            optHeader.SizeOfUninitializedData = sizeOfUninitializedData;
+
+            // Calculate SizeOfImage and SizeOfHeaders
+            uint32_t sizeOfHeaders = align(sizeof(DOSHeader) + DOS_STUB_SIZE + sizeof(uint32_t) + sizeof(FileHeader) + sizeof(OptionalHeader32) + sections_.size() * sizeof(SectionHeader), fileAlignment_);
+            uint32_t sizeOfImage = sizeOfHeaders;
+            for(const auto& s : sections_) {
+                uint32_t sectionEnd = s.virtualAddress + align(s.virtualSize, sectionAlignment_);
+                if (sectionEnd > sizeOfImage) {
+                    sizeOfImage = sectionEnd;
+                }
+            }
+            optHeader.SizeOfImage = align(sizeOfImage, sectionAlignment_);
+            optHeader.SizeOfHeaders = sizeOfHeaders;
+            optHeader.CheckSum = 0;  // Will be calculated later if needed
+
+            // Set up data directories
+            setupDataDirectories(optHeader.dataDirectory);
+
+            file.write(reinterpret_cast<const char*>(&optHeader), sizeof(optHeader));
         }
     }
 
     void writeSectionHeaders(std::ofstream& file) {
         for (const auto& section : sections_) {
             SectionHeader sectionHeader = {};
+            
+            // Copy section name (max 8 characters, null-terminated if shorter)
+            memset(sectionHeader.Name, 0, 8);
             strncpy(sectionHeader.Name, section.name.c_str(), 8);
+            
+            // Set section properties
             sectionHeader.Misc.VirtualSize = section.virtualSize;
             sectionHeader.VirtualAddress = section.virtualAddress;
             sectionHeader.SizeOfRawData = section.rawDataSize;
             sectionHeader.PointerToRawData = section.rawDataPointer;
             sectionHeader.Characteristics = section.characteristics;
+            
+            // Initialize unused fields
+            sectionHeader.PointerToRelocations = 0;
+            sectionHeader.PointerToLinenumbers = 0;
+            sectionHeader.NumberOfRelocations = 0;
+            sectionHeader.NumberOfLinenumbers = 0;
+            
+            // Validate section boundaries
+            if (section.virtualAddress == 0) {
+                throw std::runtime_error("Section " + section.name + " has invalid virtual address");
+            }
+            
+            if (section.rawDataSize > 0 && section.rawDataPointer == 0) {
+                throw std::runtime_error("Section " + section.name + " has raw data but no file pointer");
+            }
+            
+            // Check alignment
+            if (section.virtualAddress % sectionAlignment_ != 0) {
+                throw std::runtime_error("Section " + section.name + " virtual address not aligned");
+            }
+            
+            if (section.rawDataSize > 0 && section.rawDataPointer % fileAlignment_ != 0) {
+                throw std::runtime_error("Section " + section.name + " file pointer not aligned");
+            }
+            
             file.write(reinterpret_cast<const char*>(&sectionHeader), sizeof(sectionHeader));
         }
     }
 
     void writeSectionData(std::ofstream& file) {
+        // Calculate the expected starting position after headers
+        uint32_t headerSize = sizeof(DOSHeader) + DOS_STUB_SIZE + sizeof(uint32_t) + sizeof(FileHeader) + 
+                             (is64Bit_ ? sizeof(OptionalHeader64) : sizeof(OptionalHeader32)) + 
+                             (sections_.size() * sizeof(SectionHeader));
+        uint32_t alignedHeaderSize = align(headerSize, fileAlignment_);
+        
+        // Track the current expected file position
+        uint32_t currentFilePos = alignedHeaderSize;
+        
+        // Sort sections by file pointer to ensure correct order
+        std::vector<const Section*> sectionsWithData;
         for (const auto& section : sections_) {
-            if (section.rawDataSize > 0) {
-                file.seekp(section.rawDataPointer);
-                if (!section.data.empty()) {
-                    file.write(reinterpret_cast<const char*>(section.data.data()), section.data.size());
-                }
-                if (section.rawDataSize > section.data.size()) {
-                    std::vector<char> padding(section.rawDataSize - section.data.size(), 0);
-                    file.write(padding.data(), padding.size());
+            // Only include sections that have file data (not uninitialized like .bss)
+            if (!(section.characteristics & IMAGE_SCN_CNT_UNINITIALIZED_DATA) && section.rawDataSize > 0) {
+                sectionsWithData.push_back(&section);
+            }
+        }
+        
+        // Sort by file pointer position
+        std::sort(sectionsWithData.begin(), sectionsWithData.end(), 
+                  [](const Section* a, const Section* b) {
+                      return a->rawDataPointer < b->rawDataPointer;
+                  });
+        
+        // Validate section layout before writing
+        validateSectionFileLayout(sectionsWithData, alignedHeaderSize);
+        
+        // Write each section's data
+        for (const Section* section : sectionsWithData) {
+            // Validate file pointer alignment
+            if (section->rawDataPointer % fileAlignment_ != 0) {
+                throw std::runtime_error("Section " + section->name + " file pointer (0x" + 
+                                       std::to_string(section->rawDataPointer) + ") not aligned to file alignment (0x" + 
+                                       std::to_string(fileAlignment_) + ")");
+            }
+            
+            // Fill any gap between current position and section start with zeros
+            if (section->rawDataPointer > currentFilePos) {
+                uint32_t gapSize = section->rawDataPointer - currentFilePos;
+                writeFilePadding(file, currentFilePos, gapSize);
+                currentFilePos = section->rawDataPointer;
+            } else if (section->rawDataPointer < currentFilePos) {
+                throw std::runtime_error("Section " + section->name + " file pointer (0x" + 
+                                       std::to_string(section->rawDataPointer) + ") overlaps with previous data (current pos: 0x" + 
+                                       std::to_string(currentFilePos) + ")");
+            }
+            
+            // Seek to the section's file position
+            file.seekp(section->rawDataPointer);
+            if (file.fail()) {
+                throw std::runtime_error("Failed to seek to file position 0x" + std::to_string(section->rawDataPointer) + 
+                                       " for section " + section->name);
+            }
+            
+            // Verify we're at the expected position
+            uint32_t actualPos = static_cast<uint32_t>(file.tellp());
+            if (actualPos != section->rawDataPointer) {
+                throw std::runtime_error("Seek verification failed for section " + section->name + 
+                                       ". Expected: 0x" + std::to_string(section->rawDataPointer) + 
+                                       ", Actual: 0x" + std::to_string(actualPos));
+            }
+            
+            // Write the actual section data
+            uint32_t dataSize = section->data.size();
+            if (dataSize > 0) {
+                file.write(reinterpret_cast<const char*>(section->data.data()), dataSize);
+                if (file.fail()) {
+                    throw std::runtime_error("Failed to write " + std::to_string(dataSize) + 
+                                           " bytes of data for section " + section->name);
                 }
             }
+            
+            // Calculate and write padding to reach the required raw data size
+            uint32_t paddingSize = calculateSectionPadding(*section);
+            if (paddingSize > 0) {
+                writeSectionPadding(file, *section, paddingSize);
+            }
+            
+            // Update current file position
+            currentFilePos = section->rawDataPointer + section->rawDataSize;
+            
+            // Validate that we wrote exactly the expected amount
+            uint32_t finalPos = static_cast<uint32_t>(file.tellp());
+            if (finalPos != currentFilePos) {
+                throw std::runtime_error("Section " + section->name + " write size mismatch. " +
+                                       "Expected final position: 0x" + std::to_string(currentFilePos) + 
+                                       ", Actual: 0x" + std::to_string(finalPos) + 
+                                       " (Data size: " + std::to_string(dataSize) + 
+                                       ", Padding: " + std::to_string(paddingSize) + 
+                                       ", Raw size: " + std::to_string(section->rawDataSize) + ")");
+            }
+        }
+        
+        // Validate uninitialized sections (like .bss) have correct layout
+        validateUninitializedSections();
+        
+        // Final file structure validation
+        validateFinalFileStructure(file, currentFilePos);
+    }
+    
+    void validateSectionFileLayout(const std::vector<const Section*>& sectionsWithData, uint32_t headerSize) {
+        if (sectionsWithData.empty()) {
+            return; // No sections with file data
+        }
+        
+        // Check that first section starts after headers
+        const Section* firstSection = sectionsWithData[0];
+        if (firstSection->rawDataPointer < headerSize) {
+            throw std::runtime_error("First section " + firstSection->name + " file pointer (0x" + 
+                                   std::to_string(firstSection->rawDataPointer) + ") overlaps with headers (size: 0x" + 
+                                   std::to_string(headerSize) + ")");
+        }
+        
+        // Check for overlaps between sections
+        for (size_t i = 1; i < sectionsWithData.size(); ++i) {
+            const Section* prevSection = sectionsWithData[i-1];
+            const Section* currSection = sectionsWithData[i];
+            
+            uint32_t prevSectionEnd = prevSection->rawDataPointer + prevSection->rawDataSize;
+            if (currSection->rawDataPointer < prevSectionEnd) {
+                throw std::runtime_error("Section " + currSection->name + " file pointer (0x" + 
+                                       std::to_string(currSection->rawDataPointer) + ") overlaps with section " + 
+                                       prevSection->name + " (ends at 0x" + std::to_string(prevSectionEnd) + ")");
+            }
+        }
+        
+        // Validate each section's internal consistency
+        for (const Section* section : sectionsWithData) {
+            if (section->rawDataSize == 0) {
+                throw std::runtime_error("Section " + section->name + " has rawDataSize of 0 but was included in file data sections");
+            }
+            
+            if (section->data.size() > section->rawDataSize) {
+                throw std::runtime_error("Section " + section->name + " data size (" + 
+                                       std::to_string(section->data.size()) + ") exceeds raw data size (" + 
+                                       std::to_string(section->rawDataSize) + ")");
+            }
+            
+            // Check reasonable size limits (prevent extremely large sections)
+            if (section->rawDataSize > 0x10000000) { // 256MB limit
+                throw std::runtime_error("Section " + section->name + " raw data size (" + 
+                                       std::to_string(section->rawDataSize) + ") exceeds reasonable limit");
+            }
+        }
+    }
+    
+    uint32_t calculateSectionPadding(const Section& section) {
+        uint32_t dataSize = section.data.size();
+        
+        // Validate that raw data size is at least as large as actual data
+        if (section.rawDataSize < dataSize) {
+            throw std::runtime_error("Section " + section.name + " raw data size (" + 
+                                   std::to_string(section.rawDataSize) + ") is smaller than actual data size (" + 
+                                   std::to_string(dataSize) + ")");
+        }
+        
+        uint32_t paddingSize = section.rawDataSize - dataSize;
+        
+        // Validate padding size is reasonable
+        if (paddingSize > fileAlignment_ * 2) {
+            // Allow up to 2x file alignment for padding (should be enough for any valid case)
+            throw std::runtime_error("Section " + section.name + " requires excessive padding (" + 
+                                   std::to_string(paddingSize) + " bytes). This may indicate a layout error.");
+        }
+        
+        return paddingSize;
+    }
+    
+    void writeSectionPadding(std::ofstream& file, const Section& section, uint32_t paddingSize) {
+        if (paddingSize == 0) {
+            return;
+        }
+        
+        // Write padding in chunks to avoid large memory allocation
+        const uint32_t CHUNK_SIZE = 4096; // 4KB chunks
+        std::vector<char> paddingChunk(std::min(paddingSize, CHUNK_SIZE), 0);
+        
+        uint32_t remainingPadding = paddingSize;
+        while (remainingPadding > 0) {
+            uint32_t chunkSize = std::min(remainingPadding, CHUNK_SIZE);
+            file.write(paddingChunk.data(), chunkSize);
+            
+            if (file.fail()) {
+                throw std::runtime_error("Failed to write " + std::to_string(chunkSize) + 
+                                       " bytes of padding for section " + section.name + 
+                                       " (remaining: " + std::to_string(remainingPadding) + ")");
+            }
+            
+            remainingPadding -= chunkSize;
+        }
+    }
+    
+    void writeFilePadding(std::ofstream& file, uint32_t startPos, uint32_t size) {
+        if (size == 0) {
+            return;
+        }
+        
+        file.seekp(startPos);
+        if (file.fail()) {
+            throw std::runtime_error("Failed to seek to position 0x" + std::to_string(startPos) + " for file padding");
+        }
+        
+        // Write padding in chunks
+        const uint32_t CHUNK_SIZE = 4096;
+        std::vector<char> paddingChunk(std::min(size, CHUNK_SIZE), 0);
+        
+        uint32_t remainingSize = size;
+        while (remainingSize > 0) {
+            uint32_t chunkSize = std::min(remainingSize, CHUNK_SIZE);
+            file.write(paddingChunk.data(), chunkSize);
+            
+            if (file.fail()) {
+                throw std::runtime_error("Failed to write " + std::to_string(chunkSize) + 
+                                       " bytes of file padding at position 0x" + std::to_string(startPos));
+            }
+            
+            remainingSize -= chunkSize;
+            startPos += chunkSize;
+        }
+    }
+    
+    void validateUninitializedSections() {
+        for (const auto& section : sections_) {
+            if (section.characteristics & IMAGE_SCN_CNT_UNINITIALIZED_DATA) {
+                // Uninitialized sections should not have file data
+                if (section.rawDataSize > 0) {
+                    throw std::runtime_error("Uninitialized section " + section.name + 
+                                           " should not have raw data size > 0 (has: " + 
+                                           std::to_string(section.rawDataSize) + ")");
+                }
+                
+                if (!section.data.empty()) {
+                    throw std::runtime_error("Uninitialized section " + section.name + 
+                                           " should not have data (has " + std::to_string(section.data.size()) + " bytes)");
+                }
+                
+                // Virtual size should be set for uninitialized sections
+                if (section.virtualSize == 0) {
+                    throw std::runtime_error("Uninitialized section " + section.name + 
+                                           " must have virtualSize > 0");
+                }
+                
+                // Virtual address should be properly aligned
+                if (section.virtualAddress % sectionAlignment_ != 0) {
+                    throw std::runtime_error("Uninitialized section " + section.name + 
+                                           " virtual address (0x" + std::to_string(section.virtualAddress) + 
+                                           ") not aligned to section alignment (0x" + std::to_string(sectionAlignment_) + ")");
+                }
+            }
+        }
+    }
+    
+    void validateFinalFileStructure(std::ofstream& file, uint32_t expectedSize) {
+        // Get actual file size
+        file.seekp(0, std::ios::end);
+        uint32_t actualFileSize = static_cast<uint32_t>(file.tellp());
+        
+        // Calculate expected minimum file size
+        uint32_t expectedMinSize = 0;
+        for (const auto& section : sections_) {
+            if (section.rawDataSize > 0) {
+                uint32_t sectionEnd = section.rawDataPointer + section.rawDataSize;
+                if (sectionEnd > expectedMinSize) {
+                    expectedMinSize = sectionEnd;
+                }
+            }
+        }
+        
+        // File size should match our expectations
+        if (actualFileSize < expectedMinSize) {
+            throw std::runtime_error(std::string("Final file size validation failed. ") +
+                                   "Actual size: " + std::to_string(actualFileSize) + 
+                                   ", Expected minimum: " + std::to_string(expectedMinSize));
+        }
+        
+        if (actualFileSize != expectedSize) {
+            throw std::runtime_error(std::string("Final file size mismatch. ") +
+                                   "Actual size: " + std::to_string(actualFileSize) + 
+                                   ", Expected size: " + std::to_string(expectedSize));
+        }
+        
+        // Validate file size is reasonable (not too large)
+        if (actualFileSize > 0x40000000) { // 1GB limit
+            throw std::runtime_error("Generated file size (" + std::to_string(actualFileSize) + 
+                                   ") exceeds reasonable limit (1GB)");
+        }
+        
+        // Additional structural validation
+        validateFileStructureIntegrity(actualFileSize);
+    }
+    
+    void validateFileStructureIntegrity(uint32_t fileSize) {
+        // Validate that all sections fit within the file
+        for (const auto& section : sections_) {
+            if (section.rawDataSize > 0) {
+                uint32_t sectionEnd = section.rawDataPointer + section.rawDataSize;
+                if (sectionEnd > fileSize) {
+                    throw std::runtime_error("Section " + section.name + " extends beyond file end. " +
+                                           "Section end: 0x" + std::to_string(sectionEnd) + 
+                                           ", File size: 0x" + std::to_string(fileSize));
+                }
+            }
+        }
+        
+        // Validate import directory is within file bounds if present
+        if (importDirectoryRVA_ > 0) {
+            uint32_t importFileOffset = rvaToFileOffset(importDirectoryRVA_);
+            if (importFileOffset == 0) {
+                throw std::runtime_error("Import directory RVA (0x" + std::to_string(importDirectoryRVA_) + 
+                                       ") does not map to a valid file offset");
+            }
+            
+            uint32_t importSize = calculateImportDirectorySize();
+            if (importFileOffset + importSize > fileSize) {
+                throw std::runtime_error(std::string("Import directory extends beyond file end. ") +
+                                       "Import end: 0x" + std::to_string(importFileOffset + importSize) + 
+                                       ", File size: 0x" + std::to_string(fileSize));
+            }
+        }
+        
+        // Validate that file alignment is consistent throughout
+        uint32_t headerSize = sizeof(DOSHeader) + DOS_STUB_SIZE + sizeof(uint32_t) + sizeof(FileHeader) + 
+                             (is64Bit_ ? sizeof(OptionalHeader64) : sizeof(OptionalHeader32)) + 
+                             (sections_.size() * sizeof(SectionHeader));
+        uint32_t alignedHeaderSize = align(headerSize, fileAlignment_);
+        
+        if (alignedHeaderSize % fileAlignment_ != 0) {
+            throw std::runtime_error("Header size alignment error. Aligned size: 0x" + 
+                                   std::to_string(alignedHeaderSize) + ", File alignment: 0x" + 
+                                   std::to_string(fileAlignment_));
         }
     }
 

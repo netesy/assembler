@@ -1,6 +1,7 @@
 #include "assembler.hh"
 #include "parser.hh"
 #include "translator.hh"
+#include "platform_utils.hh"
 #include <stdexcept>
 #include <iostream>
 #include <sstream>
@@ -140,7 +141,8 @@ std::string Assembler::process_includes(const std::string& source) {
             // Try to find file in include paths
             bool found = false;
             for (const auto& path : includePaths) {
-                std::string fullPath = path + "/" + filename;
+                std::string fullPath = path + PlatformUtils::getPathSeparator() + filename;
+                fullPath = PlatformUtils::normalizePath(fullPath);
                 std::ifstream incFile(fullPath);
                 if (incFile) {
                     std::string incContent((std::istreambuf_iterator<char>(incFile)),

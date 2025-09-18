@@ -1,4 +1,5 @@
 #include "elf.hh"
+#include "platform_utils.hh"
 #include <fstream>
 #include <iostream>
 #include <sstream>

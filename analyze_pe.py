@@ -11,7 +11,7 @@ def analyze_pe_file(filepath):
 
         print("\nSections:")
         for section in pe.sections:
-            print(f"  - {section.Name.decode().rstrip('\\x00')}: Virtual Address={hex(section.VirtualAddress)}, Virtual Size={section.Misc_VirtualSize}")
+            print(f"  - {section.Name.decode().rstrip('x00')}: Virtual Address={hex(section.VirtualAddress)}, Virtual Size={section.Misc_VirtualSize}")
 
         print("\nImports:")
         if hasattr(pe, 'DIRECTORY_ENTRY_IMPORT'):
